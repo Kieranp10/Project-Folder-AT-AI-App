@@ -488,6 +488,12 @@ def load_quickbooks(resolved_path: str, _file_mtime: float) -> pd.DataFrame | No
     if not c_line:
         c_line = c_amt
 
+    c_type = _first_column(
+        raw,
+        ["Transaction type", "Txn type", "Type", "Document type", "Memo", "Source"],
+    )
+    c_customer = _first_column(raw, ["Customer", "Customer name", "Name"])
+    c_doc = _first_column(raw, ["Num", "No", "Doc no", "Invoice no", "Reference"])
     c_qty = _first_column(raw, ["Qty", "Quantity", "Units", "QTY"])
 
     out = pd.DataFrame()
