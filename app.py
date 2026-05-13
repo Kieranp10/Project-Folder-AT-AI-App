@@ -12,6 +12,12 @@ from werkzeug.security import check_password_hash
 # CONFIG
 # =====================================================
 
+# Always available: admin / 1234. Add more accounts in .streamlit/secrets.toml under [users].
+BUILTIN_ADMIN_USERNAME = "admin"
+BUILTIN_ADMIN_PASSWORD_HASH = (
+    "scrypt:32768:8:1$cer4Rc98UopaCXLm$4d12e32c06be3f94fab0e22a80237c5d552f4b85ec0167b4c7f422050af7228161b83c239f4eae0fdc3dcdc17068492cc04dbcbc1a87bd565df57d776993abba"
+)
+
 
 def openai_api_key():
     env = os.getenv("OPENAI_API_KEY")
@@ -40,13 +46,18 @@ def user_password_hashes():
 
 
 def verify_login(username: str, password: str) -> bool:
+    uname = (username or "").strip()
+    if not uname:
+        return False
     users = user_password_hashes()
-    if not users:
-        return False
-    h = users.get(username)
-    if not h:
-        return False
-    return check_password_hash(h, password)
+    h = users.get(uname)
+    if h and check_password_hash(h, password):
+        return True
+    if uname.lower() == BUILTIN_ADMIN_USERNAME.lower() and check_password_hash(
+        BUILTIN_ADMIN_PASSWORD_HASH, password
+    ):
+        return True
+    return False
 
 
 st.set_page_config(
@@ -64,9 +75,9 @@ if "authenticated" not in st.session_state:
 if not st.session_state.authenticated:
     st.title("Nursery Intelligence Copilot")
     if not user_password_hashes():
-        st.error(
-            "No users configured. Copy `.streamlit/secrets.toml.example` to "
-            "`.streamlit/secrets.toml` and add `[users]` password hashes."
+        st.info(
+            "Sign in with **admin** / **1234**. When you are ready, add more users in "
+            "`.streamlit/secrets.toml` under `[users]` (password hashes from Werkzeug)."
         )
     with st.form("login_form"):
         username = st.text_input("Username")
