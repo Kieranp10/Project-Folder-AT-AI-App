@@ -343,6 +343,21 @@ def primary_line_from_query(question: str) -> str | None:
     return max(hits, key=len)
 
 
+def catalog_subsumed_by_line(line: str, catalog_name: str) -> bool:
+    """True if a crop/variety label repeats the line name in a looser/shorter form (e.g. Petunia vs PETUNIA HYBRIDS)."""
+    ln = normalize_for_match(line)
+    nn = normalize_for_match(catalog_name)
+    if not nn or not ln:
+        return False
+    if nn == ln:
+        return True
+    if len(nn) < 4:
+        return False
+    if nn not in ln:
+        return False
+    return len(nn) < len(ln) - 2
+
+
 def catalog_entry_matches(term: str, question: str, min_chars: int = 2) -> bool:
     s = str(term).strip()
     if len(s) < min_chars:
@@ -440,11 +455,15 @@ def detect_intent(q: str, df_in: pd.DataFrame | None = None):
 
     if df_in is not None:
         crops_cat, var_cat = sorted_crops_and_varieties(df_in)
+        pline = primary_line_from_query(q)
         crop_hits = catalog_matches_fuzzy(q, crops_cat, min_chars=3)
         var_hits = catalog_matches_fuzzy(q, var_cat, min_chars=2)
+        if pline:
+            crop_hits = [c for c in crop_hits if not catalog_subsumed_by_line(pline, c)]
+            var_hits = [v for v in var_hits if not catalog_subsumed_by_line(pline, v)]
         if len(crop_hits) == 1:
             intent["crop"] = crop_hits[0]
-        elif "petunia" in ql and not crop_hits:
+        elif "petunia" in ql and not crop_hits and not pline:
             intent["crop"] = "PETUNIA"
         if len(var_hits) == 1:
             intent["variety"] = var_hits[0]
@@ -504,7 +523,13 @@ def run_comparison(question: str, df_in: pd.DataFrame):
     crops_found = catalog_matches_fuzzy(question, crops_catalog, min_chars=3)
     varieties_found = catalog_matches_fuzzy(question, varieties_catalog, min_chars=2)
 
-    scope_line = lines[0] if len(lines) == 1 else None
+    pl = primary_line_from_query(question)
+    if pl:
+        crops_found = [c for c in crops_found if not catalog_subsumed_by_line(pl, c)]
+        varieties_found = [v for v in varieties_found if not catalog_subsumed_by_line(pl, v)]
+
+    line_ref = pl or (lines[0] if len(lines) == 1 else None)
+    scope_line = line_ref
     scope_crop = crops_found[0] if len(crops_found) == 1 else None
     scope_variety = varieties_found[0] if len(varieties_found) == 1 else None
 
@@ -535,9 +560,30 @@ def run_comparison(question: str, df_in: pd.DataFrame):
             )
             results[line] = float(seg["Amount"].sum())
 
+    elif len(months_q) >= 2 and line_ref:
+        mode_label = "Compare months for line (amount)"
+        for m in months_q:
+            seg = filter_sales(df_in, line=line_ref, years=year_filter, months=[m])
+            label = MONTH_NAMES.get(m, str(m))
+            results[label] = float(seg["Amount"].sum())
+
+    elif len(months_q) >= 2 and len(crops_found) == 1:
+        mode_label = "Compare months for crop (amount)"
+        for m in months_q:
+            seg = filter_sales(df_in, crop=scope_crop, years=year_filter, months=[m])
+            label = MONTH_NAMES.get(m, str(m))
+            results[label] = float(seg["Amount"].sum())
+
+    elif len(months_q) >= 2 and len(varieties_found) == 1:
+        mode_label = "Compare months for variety (amount)"
+        for m in months_q:
+            seg = filter_sales(df_in, variety=scope_variety, years=year_filter, months=[m])
+            label = MONTH_NAMES.get(m, str(m))
+            results[label] = float(seg["Amount"].sum())
+
     elif len(crops_found) >= 2:
         mode_label = "Compare crop names (amount)"
-        line_scope = scope_line if len(lines) == 1 else None
+        line_scope = line_ref if len(lines) == 1 else None
         for crop in crops_found:
             seg = filter_sales(
                 df_in,
@@ -550,7 +596,7 @@ def run_comparison(question: str, df_in: pd.DataFrame):
 
     elif len(varieties_found) >= 2:
         mode_label = "Compare varieties (amount)"
-        line_scope = scope_line if len(lines) == 1 else None
+        line_scope = line_ref if len(lines) == 1 else None
         crop_scope = scope_crop if len(crops_found) == 1 else None
         for var in varieties_found:
             seg = filter_sales(
@@ -563,18 +609,11 @@ def run_comparison(question: str, df_in: pd.DataFrame):
             )
             results[var] = float(seg["Amount"].sum())
 
-    elif len(lines) == 1 and len(years_q) >= 2:
+    elif line_ref and len(years_q) >= 2:
         mode_label = "Compare years for line (amount)"
         for y in years_q:
-            seg = filter_sales(df_in, line=scope_line, years=[y], months=month_filter)
+            seg = filter_sales(df_in, line=line_ref, years=[y], months=month_filter)
             results[str(y)] = float(seg["Amount"].sum())
-
-    elif len(lines) == 1 and len(months_q) >= 2:
-        mode_label = "Compare months for line (amount)"
-        for m in months_q:
-            seg = filter_sales(df_in, line=scope_line, years=year_filter, months=[m])
-            label = MONTH_NAMES.get(m, str(m))
-            results[label] = float(seg["Amount"].sum())
 
     elif len(crops_found) == 1 and len(years_q) >= 2:
         mode_label = "Compare years for crop (amount)"
@@ -606,7 +645,8 @@ def run_comparison(question: str, df_in: pd.DataFrame):
     else:
         st.warning(
             "For a comparison, name at least two lines, two crops, two varieties, "
-            "two months, or two years — or one line/crop/variety with two years/months."
+            "two months, or two years — or one line, crop, or variety with two months/years "
+            "(e.g. Petunia Hybrids in May vs June last year)."
         )
         return
 
