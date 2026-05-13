@@ -162,6 +162,10 @@ def load_data():
 
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
+    if "Quantity" in df.columns:
+        df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").fillna(0)
+    else:
+        df["Quantity"] = 0
 
     return df
 
@@ -338,6 +342,10 @@ def is_invoice_query(ql: str) -> bool:
     return bool(re.search(r"\b(invoice|invoice number|invoice no|doc no|document no|document number|reference)\b", ql, re.I))
 
 
+def is_sales_query(ql: str) -> bool:
+    return bool(re.search(r"\b(sales|sold)\b", ql, re.I)) and not is_credit_query(ql)
+
+
 def normalize_for_match(text: str) -> str:
     t = unicodedata.normalize("NFKD", (text or "").lower())
     t = "".join(c if c.isalnum() or c.isspace() else " " for c in t)
@@ -480,12 +488,7 @@ def load_quickbooks(resolved_path: str, _file_mtime: float) -> pd.DataFrame | No
     if not c_line:
         c_line = c_amt
 
-    c_type = _first_column(
-        raw,
-        ["Transaction type", "Txn type", "Type", "Document type", "Memo", "Source"],
-    )
-    c_customer = _first_column(raw, ["Customer", "Customer name", "Name"])
-    c_doc = _first_column(raw, ["Num", "No", "Doc no", "Invoice no", "Reference"])
+    c_qty = _first_column(raw, ["Qty", "Quantity", "Units", "QTY"])
 
     out = pd.DataFrame()
     out["Date"] = pd.to_datetime(raw[c_date], errors="coerce")
@@ -496,6 +499,12 @@ def load_quickbooks(resolved_path: str, _file_mtime: float) -> pd.DataFrame | No
         is_credit = types.str.contains(r"credit|refund|return|credit memo|credit note", regex=True, na=False)
         amt = amt.where(~is_credit | (amt <= 0), -amt.abs())
     out["Amount"] = amt
+    if c_qty:
+        qty = pd.to_numeric(raw[c_qty], errors="coerce").fillna(0.0)
+        # For credits, quantity might be positive, keep as is
+        out["Quantity"] = qty
+    else:
+        out["Quantity"] = 0.0
     out["QB_DocType"] = raw[c_type] if c_type else ""
     out["Client Name"] = raw[c_customer] if c_customer else ""
     out["QB_DocNo"] = raw[c_doc] if c_doc else ""
@@ -628,6 +637,7 @@ def detect_intent(q: str, df_in: pd.DataFrame | None = None):
         "day": None,
         "doc_no": None,
         "doc_type": None,
+        "metric": "amount",
     }
 
     if any(x in ql for x in ["compare", "vs", "versus"]):
@@ -692,8 +702,13 @@ def detect_intent(q: str, df_in: pd.DataFrame | None = None):
     intent["doc_no"] = extract_invoice_number_from_query(ql)
     if is_credit_query(ql):
         intent["doc_type"] = "credit"
-    elif is_invoice_query(ql):
+    elif is_invoice_query(ql) or is_sales_query(ql):
         intent["doc_type"] = "invoice"
+
+    if any(x in ql for x in ["how many", "quantity", "qty", "units", "pieces", "number of"]):
+        intent["metric"] = "quantity"
+    else:
+        intent["metric"] = "amount"
 
     return intent
 
@@ -713,7 +728,7 @@ def apply_filters(df_in, intent):
     )
 
 
-def run_comparison(question: str, df_in: pd.DataFrame):
+def run_comparison(question: str, df_in: pd.DataFrame, metric: str = "amount"):
     ql = question.lower()
     lines = lines_matching_query(question)
     years_q = extract_years_from_query(ql)
@@ -737,6 +752,7 @@ def run_comparison(question: str, df_in: pd.DataFrame):
 
     results = {}
     mode_label = ""
+    col = "Amount" if metric == "amount" else "Quantity"
 
     def scoped_base():
         return filter_sales(
@@ -749,7 +765,7 @@ def run_comparison(question: str, df_in: pd.DataFrame):
         )
 
     if len(lines) >= 2:
-        mode_label = "Compare lines (amount)"
+        mode_label = f"Compare lines ({metric})"
         for line in lines:
             seg = filter_sales(
                 df_in,
@@ -757,31 +773,31 @@ def run_comparison(question: str, df_in: pd.DataFrame):
                 years=year_filter,
                 months=month_filter,
             )
-            results[line] = float(seg["Amount"].sum())
+            results[line] = float(seg[col].sum())
 
     elif len(months_q) >= 2 and line_ref:
-        mode_label = "Compare months for line (amount)"
+        mode_label = f"Compare months for line ({metric})"
         for m in months_q:
             seg = filter_sales(df_in, line=line_ref, years=year_filter, months=[m])
             label = MONTH_NAMES.get(m, str(m))
-            results[label] = float(seg["Amount"].sum())
+            results[label] = float(seg[col].sum())
 
     elif len(months_q) >= 2 and len(crops_found) == 1:
-        mode_label = "Compare months for crop (amount)"
+        mode_label = f"Compare months for crop ({metric})"
         for m in months_q:
             seg = filter_sales(df_in, crop=scope_crop, years=year_filter, months=[m])
             label = MONTH_NAMES.get(m, str(m))
-            results[label] = float(seg["Amount"].sum())
+            results[label] = float(seg[col].sum())
 
     elif len(months_q) >= 2 and len(varieties_found) == 1:
-        mode_label = "Compare months for variety (amount)"
+        mode_label = f"Compare months for variety ({metric})"
         for m in months_q:
             seg = filter_sales(df_in, variety=scope_variety, years=year_filter, months=[m])
             label = MONTH_NAMES.get(m, str(m))
-            results[label] = float(seg["Amount"].sum())
+            results[label] = float(seg[col].sum())
 
     elif len(crops_found) >= 2:
-        mode_label = "Compare crop names (amount)"
+        mode_label = f"Compare crop names ({metric})"
         line_scope = line_ref if len(lines) == 1 else None
         for crop in crops_found:
             seg = filter_sales(
@@ -791,10 +807,10 @@ def run_comparison(question: str, df_in: pd.DataFrame):
                 years=year_filter,
                 months=month_filter,
             )
-            results[crop] = float(seg["Amount"].sum())
+            results[crop] = float(seg[col].sum())
 
     elif len(varieties_found) >= 2:
-        mode_label = "Compare varieties (amount)"
+        mode_label = f"Compare varieties ({metric})"
         line_scope = line_ref if len(lines) == 1 else None
         crop_scope = scope_crop if len(crops_found) == 1 else None
         for var in varieties_found:
@@ -806,40 +822,40 @@ def run_comparison(question: str, df_in: pd.DataFrame):
                 years=year_filter,
                 months=month_filter,
             )
-            results[var] = float(seg["Amount"].sum())
+            results[var] = float(seg[col].sum())
 
     elif line_ref and len(years_q) >= 2:
-        mode_label = "Compare years for line (amount)"
+        mode_label = f"Compare years for line ({metric})"
         for y in years_q:
             seg = filter_sales(df_in, line=line_ref, years=[y], months=month_filter)
-            results[str(y)] = float(seg["Amount"].sum())
+            results[str(y)] = float(seg[col].sum())
 
     elif len(crops_found) == 1 and len(years_q) >= 2:
-        mode_label = "Compare years for crop (amount)"
+        mode_label = f"Compare years for crop ({metric})"
         for y in years_q:
             seg = filter_sales(df_in, crop=scope_crop, years=[y], months=month_filter)
-            results[str(y)] = float(seg["Amount"].sum())
+            results[str(y)] = float(seg[col].sum())
 
     elif len(varieties_found) == 1 and len(years_q) >= 2:
-        mode_label = "Compare years for variety (amount)"
+        mode_label = f"Compare years for variety ({metric})"
         for y in years_q:
             seg = filter_sales(df_in, variety=scope_variety, years=[y], months=month_filter)
-            results[str(y)] = float(seg["Amount"].sum())
+            results[str(y)] = float(seg[col].sum())
 
     elif len(years_q) >= 2:
-        mode_label = "Compare calendar years (amount)"
+        mode_label = f"Compare calendar years ({metric})"
         base = scoped_base()
         for y in years_q:
             seg = base[base["Date"].dt.year == y]
-            results[str(y)] = float(seg["Amount"].sum())
+            results[str(y)] = float(seg[col].sum())
 
     elif len(months_q) >= 2:
-        mode_label = "Compare months (amount)"
+        mode_label = f"Compare months ({metric})"
         base = scoped_base()
         for m in months_q:
             seg = base[base["Date"].dt.month == m]
             label = MONTH_NAMES.get(m, str(m))
-            results[label] = float(seg["Amount"].sum())
+            results[label] = float(seg[col].sum())
 
     else:
         st.warning(
@@ -850,7 +866,7 @@ def run_comparison(question: str, df_in: pd.DataFrame):
         return
 
     st.subheader(mode_label)
-    st.dataframe(pd.Series(results, name="Amount"))
+    st.dataframe(pd.Series(results, name=col))
 
     fig = px.bar(x=list(results.keys()), y=list(results.values()))
     st.plotly_chart(fig, use_container_width=True)
@@ -872,10 +888,20 @@ QB_KEYWORDS = (
     "credit note",
     "credit memo",
     "invoice total",
+    "invoice",
+    "return",
+    "returns",
+    "refund",
+    "sales",
+    "sold",
+    "rand",
+    "rands",
+    "value",
+    "revenue",
+    "made",
     "actual sales",
     "financial",
     "accurate sales",
-    "returns",
     "from qb",
 )
 ORDER_KEYWORDS = (
@@ -883,12 +909,26 @@ ORDER_KEYWORDS = (
     "app order",
     "what we ordered",
     "ordered for",
-    "crop",
-    "variety",
     "master order",
     "store order",
     "from app",
 )
+
+
+def question_prefers_orders(ql: str) -> bool:
+    if any(k in ql for k in ORDER_KEYWORDS):
+        return True
+    if re.search(r"\b(order|ordered|quantity|qty|units|pieces)\b", ql):
+        return True
+    return False
+
+
+def question_prefers_quickbooks(ql: str) -> bool:
+    if any(k in ql for k in QB_KEYWORDS):
+        return True
+    if "store" in ql and re.search(r"\b(sales|sold|returns|return|invoice|credit|rand|rands|value|revenue|made)\b", ql):
+        return True
+    return False
 
 
 def resolve_active_dataframe(
@@ -907,11 +947,10 @@ def resolve_active_dataframe(
     if has_qb and sidebar_choice.startswith("QuickBooks"):
         return qb_df, "QuickBooks (invoices & credits, line level)", False
 
-    if has_qb and any(k in ql for k in QB_KEYWORDS):
-        if not any(k in ql for k in ORDER_KEYWORDS):
-            return qb_df, "QuickBooks (from your question)", False
+    if has_qb and question_prefers_quickbooks(ql) and not question_prefers_orders(ql):
+        return qb_df, "QuickBooks (from your question)", False
 
-    if any(k in ql for k in ORDER_KEYWORDS) and has_qb and not sidebar_choice.startswith("QuickBooks"):
+    if question_prefers_orders(ql) and has_qb and not sidebar_choice.startswith("QuickBooks"):
         return orders_df, "Rep orders (from your question)", False
 
     return orders_df, "Rep orders (app)", False
@@ -1020,7 +1059,7 @@ if question:
     ql = question.lower()
 
     if intent["compare"] and not compare_sources:
-        run_comparison(question, df_active)
+        run_comparison(question, df_active, intent["metric"])
         df_temp = df_active.copy()
 
     elif intent["top"]:
@@ -1037,9 +1076,10 @@ if question:
         else:
             group_col = "Line"
 
-        result = df_temp.groupby(group_col)["Amount"].sum().sort_values(ascending=False).head(10)
+        col = "Amount" if intent["metric"] == "amount" else "Quantity"
+        result = df_temp.groupby(group_col)[col].sum().sort_values(ascending=False).head(10)
 
-        st.subheader(f"Top {group_col}")
+        st.subheader(f"Top {group_col} ({intent['metric']})")
         st.dataframe(result)
 
         fig = px.bar(x=result.index, y=result.values)
@@ -1047,8 +1087,10 @@ if question:
 
     elif not compare_sources:
 
-        total = df_temp["Amount"].sum()
-        st.success(f"Total: {total:,}")
+        col = "Amount" if intent["metric"] == "amount" else "Quantity"
+        total = df_temp[col].sum()
+        unit = "R" if intent["metric"] == "amount" and df_active is df_qb else ""
+        st.success(f"Total {intent['metric']}: {unit}{total:,.2f}")
 
     st.subheader("Matching Data")
     if intent["compare"]:
@@ -1062,10 +1104,11 @@ st.header("Dashboard")
 tab_orders, tab_qb, tab_about = st.tabs(["Rep orders", "QuickBooks", "About the data"])
 
 with tab_orders:
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Orders", len(df_orders))
     col2.metric("Total Amount", f"{df_orders['Amount'].sum():,}")
-    col3.metric("Clients", df_orders["Client Name"].nunique())
+    col3.metric("Total Quantity", f"{df_orders['Quantity'].sum():,}")
+    col4.metric("Clients", df_orders["Client Name"].nunique())
     st.subheader("Top Clients")
     st.dataframe(df_orders.groupby("Client Name")["Amount"].sum().sort_values(ascending=False).head(10))
     st.subheader("Top Crops")
@@ -1084,11 +1127,15 @@ with tab_qb:
     else:
         sales_amt = df_qb.loc[df_qb["Amount"] > 0, "Amount"].sum()
         ret_amt = df_qb.loc[df_qb["Amount"] < 0, "Amount"].sum()
-        c1, c2, c3, c4 = st.columns(4)
+        sales_qty = df_qb.loc[df_qb["Amount"] > 0, "Quantity"].sum()
+        ret_qty = df_qb.loc[df_qb["Amount"] < 0, "Quantity"].sum()
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
         c1.metric("QB rows", len(df_qb))
         c2.metric("Net total", f"{df_qb['Amount'].sum():,.2f}")
         c3.metric("Sales (positive lines)", f"{sales_amt:,.2f}")
         c4.metric("Returns (negative lines)", f"{ret_amt:,.2f}")
+        c5.metric("Sales Qty", f"{sales_qty:,.0f}")
+        c6.metric("Returns Qty", f"{ret_qty:,.0f}")
         st.subheader("Net by line")
         st.dataframe(df_qb.groupby("Line")["Amount"].sum().sort_values(ascending=False))
         st.subheader("Sample rows")
@@ -1099,9 +1146,11 @@ with tab_about:
         """
 | Source | Best for | Limitation |
 |--------|-----------|------------|
-| **Rep orders (app)** | Crop, variety, customer/place, what was **ordered** | Not exact sell-through; can double-count or replace stock |
-| **QuickBooks** | **Money**: sales vs credits, **line** rollups | Usually no per-crop breakdown like the app |
+| **Rep orders (app)** | Crop, variety, customer/place, what was **ordered** (quantity & value) | Not exact sell-through; can double-count or replace stock |
+| **QuickBooks** | **Money**: sales vs credits, **line** rollups (quantity & amount) | Usually no per-crop breakdown like the app |
 
-The search bar uses the **sidebar data source**, unless your question clearly asks for the other (e.g. “QuickBooks” / “invoices” vs “orders” / “crops”).
+The search bar uses the **sidebar data source**, unless your question clearly asks for the other (e.g. "QuickBooks" / "invoices" vs "orders" / "crops").
+
+You can ask for **quantity** (how many) or **amount** (rand value). For returns, use "credit note" or "return"; for sales, "invoice" or "sold".
         """
     )
