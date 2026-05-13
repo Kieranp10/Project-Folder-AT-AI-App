@@ -154,6 +154,33 @@ def summarize_comparison(question: str, result_lines: list) -> str | None:
 # DATA LOAD
 # =====================================================
 
+def _first_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    cols = {str(c).strip().lower(): c for c in df.columns}
+    for cand in candidates:
+        key = cand.strip().lower()
+        if key in cols:
+            return cols[key]
+    for c in df.columns:
+        cl = str(c).strip().lower()
+        for cand in candidates:
+            if cand.strip().lower() in cl:
+                return c
+    return None
+
+
+def _map_qb_line_to_canonical(raw: str) -> str:
+    s = str(raw).strip()
+    if not s or s.lower() == "nan":
+        return ""
+    sl = normalize_for_match(s)
+    for kl in sorted(KNOWN_LINES, key=len, reverse=True):
+        kln = normalize_for_match(kl)
+        if kln in sl or sl in kln:
+            return kl
+        if line_tokens_match_query(kl, s):
+            return kl
+    return s.strip()
+
 
 @st.cache_data
 def load_data():
@@ -176,20 +203,6 @@ def load_data():
 
 
 df_orders = load_data()
-
-
-def _first_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
-    cols = {str(c).strip().lower(): c for c in df.columns}
-    for cand in candidates:
-        key = cand.strip().lower()
-        if key in cols:
-            return cols[key]
-    for c in df.columns:
-        cl = str(c).strip().lower()
-        for cand in candidates:
-            if cand.strip().lower() in cl:
-                return c
-    return None
 
 
 # =====================================================
@@ -426,20 +439,6 @@ def primary_line_from_query(question: str) -> str | None:
     if not hits:
         return None
     return max(hits, key=len)
-
-
-def _map_qb_line_to_canonical(raw: str) -> str:
-    s = str(raw).strip()
-    if not s or s.lower() == "nan":
-        return ""
-    sl = normalize_for_match(s)
-    for kl in sorted(KNOWN_LINES, key=len, reverse=True):
-        kln = normalize_for_match(kl)
-        if kln in sl or sl in kln:
-            return kl
-        if line_tokens_match_query(kl, s):
-            return kl
-    return s.strip()
 
 
 def _app_dir() -> Path:
