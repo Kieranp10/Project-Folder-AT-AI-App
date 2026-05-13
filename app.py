@@ -164,6 +164,83 @@ def _first_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 
+def normalize_for_match(text: str) -> str:
+    t = unicodedata.normalize("NFKD", (text or "").lower())
+    t = "".join(c if c.isalnum() or c.isspace() else " " for c in t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def fold_cm(text: str) -> str:
+    return re.sub(r"(\d+)\s*cm\b", r"\1cm", text, flags=re.I)
+
+
+def tokenize_phrase(text: str) -> list[str]:
+    s = fold_cm(normalize_for_match(text))
+    return re.findall(r"[a-z0-9_]+", s)
+
+
+def line_requires_cm_number(line: str) -> str | None:
+    m = re.search(r"(\d+)\s*CM", line, re.I)
+    return m.group(1) if m else None
+
+
+def query_satisfies_line_cm(line: str, question: str) -> bool:
+    num = line_requires_cm_number(line)
+    if not num:
+        return True
+    qn = fold_cm(normalize_for_match(question))
+    if re.search(rf"\b{re.escape(num)}\s*cm\b", qn, re.I):
+        return True
+    if f"{num}cm" in re.sub(r"\s+", "", qn):
+        return True
+    return False
+
+
+def tokens_match(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    if len(a) >= 3 and len(b) >= 3 and (a in b or b in a):
+        return True
+    ra, rb = a.rstrip("es").rstrip("s"), b.rstrip("es").rstrip("s")
+    if len(ra) >= 3 and ra == rb:
+        return True
+    if min(len(a), len(b)) >= 4 and SequenceMatcher(None, a, b).ratio() >= 0.86:
+        return True
+    return False
+
+
+def line_tokens_match_query(line: str, question: str) -> bool:
+    ltoks = tokenize_phrase(line)
+    qtoks = tokenize_phrase(question)
+    if not ltoks:
+        return False
+    return all(any(tokens_match(lt, qt) for qt in qtoks) for lt in ltoks)
+
+
+def line_matches_query(line: str, question: str) -> bool:
+    if not query_satisfies_line_cm(line, question):
+        return False
+    ln = normalize_for_match(line)
+    qn = normalize_for_match(question)
+    if ln in qn:
+        return True
+    if re.sub(r"\s+", "", ln) in re.sub(r"\s+", "", qn):
+        return True
+    return line_tokens_match_query(line, question)
+
+
+def lines_matching_query(question: str) -> list[str]:
+    return [line for line in KNOWN_LINES if line_matches_query(line, question)]
+
+
+def primary_line_from_query(question: str) -> str | None:
+    hits = lines_matching_query(question)
+    if not hits:
+        return None
+    return max(hits, key=len)
+
+
 def _map_qb_line_to_canonical(raw: str) -> str:
     s = str(raw).strip()
     if not s or s.lower() == "nan":
