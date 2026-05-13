@@ -284,6 +284,60 @@ def extract_months_from_query(ql: str) -> list[int]:
     return sorted(set(found))
 
 
+def extract_day_month_year_from_query(ql: str) -> dict[str, int | None]:
+    out = {"day": None, "month": None, "year": None}
+    month_names = "|".join(MONTH_WORDS.keys())
+
+    m = re.search(
+        rf"\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({month_names})(?:\s+(20\d{{2}}))?\b",
+        ql,
+        re.I,
+    )
+    if m:
+        out["day"] = int(m.group(1))
+        out["month"] = MONTH_WORDS[m.group(2).lower()]
+        if m.group(3):
+            out["year"] = int(m.group(3))
+        return out
+
+    m = re.search(rf"\b({month_names})\s+(20\d{{2}})\b", ql, re.I)
+    if m:
+        out["month"] = MONTH_WORDS[m.group(1).lower()]
+        out["year"] = int(m.group(2))
+        return out
+
+    m = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})\b", ql)
+    if m:
+        day = int(m.group(1))
+        month = int(m.group(2))
+        year = int(m.group(3))
+        if year < 100:
+            year += 2000
+        out.update({"day": day, "month": month, "year": year})
+        return out
+
+    return out
+
+
+def extract_invoice_number_from_query(ql: str) -> str | None:
+    m = re.search(
+        r"\b(?:invoice(?:\s*(?:no|number|#))|doc(?:ument)?(?:\s*(?:no|number|#))|reference(?:\s*(?:no|#))?)\s*[:#]?\s*([A-Za-z0-9\-]+)\b",
+        ql,
+        re.I,
+    )
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def is_credit_query(ql: str) -> bool:
+    return bool(re.search(r"\b(credit note|credit memo|refund|return|credit memo|credit)\b", ql, re.I))
+
+
+def is_invoice_query(ql: str) -> bool:
+    return bool(re.search(r"\b(invoice|invoice number|invoice no|doc no|document no|document number|reference)\b", ql, re.I))
+
+
 def normalize_for_match(text: str) -> str:
     t = unicodedata.normalize("NFKD", (text or "").lower())
     t = "".join(c if c.isalnum() or c.isspace() else " " for c in t)
@@ -518,6 +572,9 @@ def filter_sales(
     client=None,
     years=None,
     months=None,
+    days=None,
+    doc_no=None,
+    doc_type=None,
 ):
     out = d.copy()
     if line:
@@ -528,10 +585,25 @@ def filter_sales(
         out = out[out["Variety"].astype(str).str.contains(variety, case=False, na=False)]
     if client and "Client Name" in out.columns:
         out = out[out["Client Name"].astype(str).str.contains(client, case=False, na=False)]
+    if doc_no and "QB_DocNo" in out.columns:
+        out = out[out["QB_DocNo"].astype(str).str.contains(str(doc_no), case=False, na=False)]
+    if doc_type:
+        if "QB_DocType" in out.columns:
+            if doc_type == "credit":
+                out = out[out["QB_DocType"].astype(str).str.contains(r"credit|refund|return|memo", case=False, na=False)]
+            elif doc_type == "invoice":
+                out = out[~out["QB_DocType"].astype(str).str.contains(r"credit|refund|return|memo", case=False, na=False)]
+        elif "Amount" in out.columns:
+            if doc_type == "credit":
+                out = out[out["Amount"] < 0]
+            elif doc_type == "invoice":
+                out = out[out["Amount"] >= 0]
     if years:
         out = out[out["Date"].dt.year.isin(years)]
     if months:
         out = out[out["Date"].dt.month.isin(months)]
+    if days:
+        out = out[out["Date"].dt.day.isin(days)]
     return out
 
 
@@ -553,12 +625,15 @@ def detect_intent(q: str, df_in: pd.DataFrame | None = None):
         "client": None,
         "year": None,
         "month": None,
+        "day": None,
+        "doc_no": None,
+        "doc_type": None,
     }
 
     if any(x in ql for x in ["compare", "vs", "versus"]):
         intent["compare"] = True
 
-    if any(x in ql for x in ["how many", "total", "sold", "amount"]):
+    if any(x in ql for x in ["how many", "total", "sold", "amount", "invoice", "credit note", "credit memo"]):
         intent["total"] = True
 
     if any(x in ql for x in ["top", "best", "highest"]):
@@ -572,7 +647,7 @@ def detect_intent(q: str, df_in: pd.DataFrame | None = None):
 
     if df_in is not None:
         crops_cat, var_cat = sorted_crops_and_varieties(df_in)
-        pline = primary_line_from_query(q)
+        pline = intent["line"]
         crop_hits = catalog_matches_fuzzy(q, crops_cat, min_chars=3)
         var_hits = catalog_matches_fuzzy(q, var_cat, min_chars=2)
         if pline:
@@ -584,14 +659,24 @@ def detect_intent(q: str, df_in: pd.DataFrame | None = None):
             intent["crop"] = "PETUNIA"
         if len(var_hits) == 1:
             intent["variety"] = var_hits[0]
+        if "Client Name" in df_in.columns:
+            client_hits = catalog_matches_fuzzy(q, df_in["Client Name"].dropna().astype(str).unique().tolist(), min_chars=3)
+            if len(client_hits) == 1:
+                intent["client"] = client_hits[0]
     elif "petunia" in ql:
         intent["crop"] = "PETUNIA"
 
-    current_year = pd.Timestamp.today().year
+    date_parts = extract_day_month_year_from_query(ql)
+    if date_parts["day"]:
+        intent["day"] = date_parts["day"]
+    if date_parts["month"]:
+        intent["month"] = date_parts["month"]
+    if date_parts["year"]:
+        intent["year"] = date_parts["year"]
 
+    current_year = pd.Timestamp.today().year
     if "last year" in ql:
         intent["year"] = current_year - 1
-
     if "this year" in ql:
         intent["year"] = current_year
 
@@ -604,31 +689,28 @@ def detect_intent(q: str, df_in: pd.DataFrame | None = None):
             intent["month"] = v
             break
 
+    intent["doc_no"] = extract_invoice_number_from_query(ql)
+    if is_credit_query(ql):
+        intent["doc_type"] = "credit"
+    elif is_invoice_query(ql):
+        intent["doc_type"] = "invoice"
+
     return intent
 
 
 def apply_filters(df_in, intent):
-    d = df_in.copy()
-
-    if intent["line"]:
-        d = d[d["Line"].astype(str).str.contains(intent["line"], case=False, na=False)]
-
-    if intent["crop"] and "Crop Name" in d.columns:
-        d = d[d["Crop Name"].astype(str).str.contains(intent["crop"], case=False, na=False)]
-
-    if intent["variety"] and "Variety" in d.columns:
-        d = d[d["Variety"].astype(str).str.contains(intent["variety"], case=False, na=False)]
-
-    if intent["client"] and "Client Name" in d.columns:
-        d = d[d["Client Name"].astype(str).str.contains(intent["client"], case=False, na=False)]
-
-    if intent["year"]:
-        d = d[d["Date"].dt.year == intent["year"]]
-
-    if intent["month"]:
-        d = d[d["Date"].dt.month == intent["month"]]
-
-    return d
+    return filter_sales(
+        df_in,
+        line=intent.get("line"),
+        crop=intent.get("crop"),
+        variety=intent.get("variety"),
+        client=intent.get("client"),
+        years=[intent["year"]] if intent.get("year") else None,
+        months=[intent["month"]] if intent.get("month") else None,
+        days=[intent["day"]] if intent.get("day") else None,
+        doc_no=intent.get("doc_no"),
+        doc_type=intent.get("doc_type"),
+    )
 
 
 def run_comparison(question: str, df_in: pd.DataFrame):
