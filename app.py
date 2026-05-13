@@ -448,6 +448,22 @@ def catalog_matches_fuzzy(question: str, catalog: list[str], min_chars: int = 2)
     return out
 
 
+def sorted_crops_and_varieties(df_in: pd.DataFrame | None) -> tuple[list[str], list[str]]:
+    if df_in is None:
+        return [], []
+
+    crops = []
+    varieties = []
+    if "Crop Name" in df_in.columns:
+        crops = [str(x).strip() for x in df_in["Crop Name"].dropna().unique() if str(x).strip()]
+    if "Variety" in df_in.columns:
+        varieties = [str(x).strip() for x in df_in["Variety"].dropna().unique() if str(x).strip()]
+
+    crops = sorted(set(crops), key=lambda s: (len(s), s), reverse=True)
+    varieties = sorted(set(varieties), key=lambda s: (len(s), s), reverse=True)
+    return crops, varieties
+
+
 def filter_sales(
     d: pd.DataFrame,
     *,
