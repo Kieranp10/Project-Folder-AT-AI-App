@@ -164,20 +164,6 @@ def _first_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 
-def _map_qb_line_to_canonical(raw: str) -> str:
-    s = str(raw).strip()
-    if not s or s.lower() == "nan":
-        return ""
-    sl = normalize_for_match(s)
-    for kl in sorted(KNOWN_LINES, key=len, reverse=True):
-        kln = normalize_for_match(kl)
-        if kln in sl or sl in kln:
-            return kl
-        if line_tokens_match_query(kl, s):
-            return kl
-    return s.strip()
-
-
 @st.cache_data
 def load_data():
     df = pd.read_excel("master_orders.xlsx")
@@ -289,6 +275,20 @@ else:
     df_qb = None
 df_orders = load_data()
 df = df_orders
+
+
+def _map_qb_line_to_canonical(raw: str) -> str:
+    s = str(raw).strip()
+    if not s or s.lower() == "nan":
+        return ""
+    sl = normalize_for_match(s)
+    for kl in sorted(KNOWN_LINES, key=len, reverse=True):
+        kln = normalize_for_match(kl)
+        if kln in sl or sl in kln:
+            return kl
+        if line_tokens_match_query(kl, s):
+            return kl
+    return s.strip()
 
 
 def catalog_subsumed_by_line(line: str, catalog_name: str) -> bool:
