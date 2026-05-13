@@ -218,6 +218,37 @@ def line_tokens_match_query(line: str, question: str) -> bool:
     return all(any(tokens_match(lt, qt) for qt in qtoks) for lt in ltoks)
 
 
+KNOWN_LINES = [
+    "SEEDLINGS",
+    "15CM COLOUR POTS",
+    "12CM COLOUR POT",
+    "12CM HERB/VEG",
+    "PETUNIA HYBRIDS",
+    "SIMPLY BEAUTIFUL",
+    "PLANT TO PLATE",
+    "MID RANGE",
+    "CALIBRACHOA",
+    "20CM AERO BOWL",
+    "14CM SUCCULENTS",
+    "25CM HANGING BASKET",
+    "25CM COLOUR POT",
+    "ARGYRANTHEMUM",
+    "15CM RANUNCULUS",
+    "15CM ANGELONIA",
+    "12CM PATIO RANGE",
+    "12CM ORNAMENTAL CHILLI",
+    "9CM SUCCULENTS",
+    "DAHLIA POTS",
+    "12CM PETUNIA HYBRIDS",
+    "32CM MIX AND MINGLE",
+    "12CM PRIMROSE/OBCONICA",
+    "CHILLI POT",
+    "LAWN PLUGS",
+    "12CM GRASS POTS",
+    "17CM GERANIUM",
+]
+
+
 def line_matches_query(line: str, question: str) -> bool:
     if not query_satisfies_line_cm(line, question):
         return False
