@@ -24,10 +24,16 @@ def openai_api_key():
 
 
 def user_password_hashes():
+    """Streamlit wraps `[users]` in AttrDict, not plain dict — coerce before use."""
     try:
-        u = st.secrets.get("users", {})
-        if isinstance(u, dict):
-            return u
+        u = st.secrets.get("users")
+        if u is None:
+            return {}
+        if hasattr(u, "to_dict"):
+            u = u.to_dict()
+        elif not isinstance(u, dict):
+            u = dict(u)
+        return {str(k): str(v) for k, v in u.items()}
     except Exception:
         pass
     return {}
