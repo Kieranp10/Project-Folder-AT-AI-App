@@ -162,9 +162,8 @@ def load_data():
 
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
-    # For master orders, Amount is actually the quantity ordered
+    # For master orders, Amount represents the quantity ordered (no rand values)
     df["Quantity"] = df["Amount"]
-    df["Amount"] = 0  # No rand values in master orders
 
     return df
 
