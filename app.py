@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import os
 import re
+import unicodedata
+from difflib import SequenceMatcher
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -263,21 +266,115 @@ def extract_months_from_query(ql: str) -> list[int]:
     return sorted(set(found))
 
 
-def detect_lines_in_query(ql: str) -> list[str]:
-    ql = ql.lower()
-    return [line for line in KNOWN_LINES if line.lower() in ql]
+def normalize_for_match(text: str) -> str:
+    t = unicodedata.normalize("NFKD", (text or "").lower())
+    t = "".join(c if c.isalnum() or c.isspace() else " " for c in t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
 
 
-def terms_from_query(ql: str, catalog: list[str], min_len: int = 3) -> list[str]:
-    ql_lower = ql.lower()
-    matched = []
+def fold_cm(text: str) -> str:
+    return re.sub(r"(\d+)\s*cm\b", r"\1cm", text, flags=re.I)
+
+
+def tokenize_phrase(text: str) -> list[str]:
+    s = fold_cm(normalize_for_match(text))
+    return re.findall(r"[a-z0-9_]+", s)
+
+
+def line_requires_cm_number(line: str) -> str | None:
+    m = re.search(r"(\d+)\s*CM", line, re.I)
+    return m.group(1) if m else None
+
+
+def query_satisfies_line_cm(line: str, question: str) -> bool:
+    num = line_requires_cm_number(line)
+    if not num:
+        return True
+    qn = fold_cm(normalize_for_match(question))
+    if re.search(rf"\b{re.escape(num)}\s*cm\b", qn, re.I):
+        return True
+    if f"{num}cm" in re.sub(r"\s+", "", qn):
+        return True
+    return False
+
+
+def tokens_match(a: str, b: str) -> bool:
+    if a == b:
+        return True
+    if len(a) >= 3 and len(b) >= 3 and (a in b or b in a):
+        return True
+    ra, rb = a.rstrip("es").rstrip("s"), b.rstrip("es").rstrip("s")
+    if len(ra) >= 3 and ra == rb:
+        return True
+    if min(len(a), len(b)) >= 4 and SequenceMatcher(None, a, b).ratio() >= 0.86:
+        return True
+    return False
+
+
+def line_tokens_match_query(line: str, question: str) -> bool:
+    ltoks = tokenize_phrase(line)
+    qtoks = tokenize_phrase(question)
+    if not ltoks:
+        return False
+    return all(any(tokens_match(lt, qt) for qt in qtoks) for lt in ltoks)
+
+
+def line_matches_query(line: str, question: str) -> bool:
+    if not query_satisfies_line_cm(line, question):
+        return False
+    ln = normalize_for_match(line)
+    qn = normalize_for_match(question)
+    if ln in qn:
+        return True
+    if re.sub(r"\s+", "", ln) in re.sub(r"\s+", "", qn):
+        return True
+    return line_tokens_match_query(line, question)
+
+
+def lines_matching_query(question: str) -> list[str]:
+    return [line for line in KNOWN_LINES if line_matches_query(line, question)]
+
+
+def primary_line_from_query(question: str) -> str | None:
+    hits = lines_matching_query(question)
+    if not hits:
+        return None
+    return max(hits, key=len)
+
+
+def catalog_entry_matches(term: str, question: str, min_chars: int = 2) -> bool:
+    s = str(term).strip()
+    if len(s) < min_chars:
+        return False
+    sn = normalize_for_match(s)
+    qn = normalize_for_match(question)
+    if sn in qn:
+        return True
+    if re.sub(r"\s+", "", sn) in re.sub(r"\s+", "", qn):
+        return True
+    stoks = [t for t in tokenize_phrase(s) if len(t) >= min_chars or t.isdigit()]
+    if not stoks:
+        return False
+    qtoks = tokenize_phrase(question)
+    if not all(any(tokens_match(st, qt) for qt in qtoks) for st in stoks):
+        return False
+    if len(stoks) == 1 and len(stoks[0]) < 5:
+        return sn in qn or re.sub(r"\s+", "", sn) in re.sub(r"\s+", "", qn)
+    return True
+
+
+def catalog_matches_fuzzy(question: str, catalog: list[str], min_chars: int = 2) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
     for term in catalog:
         s = str(term).strip()
-        if len(s) < min_len:
+        if s in seen:
             continue
-        if s.lower() in ql_lower:
-            matched.append(s)
-    return matched
+        if catalog_entry_matches(s, question, min_chars=min_chars):
+            seen.add(s)
+            out.append(s)
+    return out
 
 
 def filter_sales(
@@ -311,7 +408,7 @@ def filter_sales(
 # =====================================================
 
 
-def detect_intent(q: str):
+def detect_intent(q: str, df_in: pd.DataFrame | None = None):
     ql = q.lower()
 
     intent = {
@@ -335,16 +432,23 @@ def detect_intent(q: str):
     if any(x in ql for x in ["top", "best", "highest"]):
         intent["top"] = True
 
-    for line in KNOWN_LINES:
-        if line.lower() in ql:
-            intent["line"] = line
-            break
+    intent["line"] = primary_line_from_query(q)
 
     intent["crop"] = None
     intent["variety"] = None
     intent["client"] = None
 
-    if "petunia" in ql:
+    if df_in is not None:
+        crops_cat, var_cat = sorted_crops_and_varieties(df_in)
+        crop_hits = catalog_matches_fuzzy(q, crops_cat, min_chars=3)
+        var_hits = catalog_matches_fuzzy(q, var_cat, min_chars=2)
+        if len(crop_hits) == 1:
+            intent["crop"] = crop_hits[0]
+        elif "petunia" in ql and not crop_hits:
+            intent["crop"] = "PETUNIA"
+        if len(var_hits) == 1:
+            intent["variety"] = var_hits[0]
+    elif "petunia" in ql:
         intent["crop"] = "PETUNIA"
 
     current_year = pd.Timestamp.today().year
@@ -393,12 +497,12 @@ def apply_filters(df_in, intent):
 
 def run_comparison(question: str, df_in: pd.DataFrame):
     ql = question.lower()
-    lines = detect_lines_in_query(ql)
+    lines = lines_matching_query(question)
     years_q = extract_years_from_query(ql)
     months_q = extract_months_from_query(ql)
     crops_catalog, varieties_catalog = sorted_crops_and_varieties(df_in)
-    crops_found = terms_from_query(ql, crops_catalog)
-    varieties_found = terms_from_query(ql, varieties_catalog)
+    crops_found = catalog_matches_fuzzy(question, crops_catalog, min_chars=3)
+    varieties_found = catalog_matches_fuzzy(question, varieties_catalog, min_chars=2)
 
     scope_line = lines[0] if len(lines) == 1 else None
     scope_crop = crops_found[0] if len(crops_found) == 1 else None
@@ -532,7 +636,7 @@ question = st.text_input("Ask anything about sales")
 
 if question:
 
-    intent = detect_intent(question)
+    intent = detect_intent(question, df)
     df_temp = apply_filters(df, intent)
 
     if len(df_temp) == 0:
