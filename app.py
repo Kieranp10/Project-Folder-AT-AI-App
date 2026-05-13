@@ -198,9 +198,6 @@ def load_data():
     return df
 
 
-df_orders = load_data()
-
-
 def _app_dir() -> Path:
     return Path(__file__).resolve().parent
 
@@ -290,6 +287,7 @@ if _qb_resolved:
     df_qb = load_quickbooks(_qb_resolved, os.path.getmtime(_qb_resolved))
 else:
     df_qb = None
+df_orders = load_data()
 df = df_orders
 
 
