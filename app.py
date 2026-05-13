@@ -293,11 +293,16 @@ def load_data():
 
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
-    # For master orders, Amount represents the quantity ordered (no rand values)
-    df["Quantity"] = df["Amount"]
+    
+    # For master orders, read Quantity from the file (or use Amount as fallback)
+    c_qty = _first_column(df, ["Quantity", "Qty", "Units", "QTY", "Amount"])
+    if c_qty and c_qty != "Amount":
+        df["Quantity"] = pd.to_numeric(df[c_qty], errors="coerce")
+    else:
+        df["Quantity"] = pd.to_numeric(df["Amount"], errors="coerce")
 
-    # Map line column
-    c_line = _first_column(df, ["Line", "Product/service", "Item", "Description", "Class", "Item description"])
+    # Map line column - look for Lines (plural) first since user renamed it
+    c_line = _first_column(df, ["Lines", "Line", "Product/service", "Item", "Description", "Class", "Item description"])
     if c_line:
         df["Line"] = df[c_line].map(_map_qb_line_to_canonical)
     else:
@@ -350,7 +355,7 @@ def load_quickbooks(resolved_path: str, _file_mtime: float) -> pd.DataFrame | No
     raw.columns = raw.columns.astype(str).str.strip()
 
     c_date = _first_column(raw, ["Date", "Txn date", "Transaction date", "Invoice date", "Posting date"])
-    c_line = _first_column(raw, ["Line", "Product/service", "Item", "Description", "Class", "Item description"])
+    c_line = _first_column(raw, ["Lines", "Line", "Product/service", "Item", "Description", "Class", "Item description"])
     c_amt = _first_column(raw, ["Amount", "Net amount", "Line amount", "Sales price", "Total"])
     if not c_date or not c_amt:
         return None
