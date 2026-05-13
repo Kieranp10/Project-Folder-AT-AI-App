@@ -165,6 +165,13 @@ def load_data():
     # For master orders, Amount represents the quantity ordered (no rand values)
     df["Quantity"] = df["Amount"]
 
+    # Map line column
+    c_line = _first_column(df, ["Line", "Product/service", "Item", "Description", "Class", "Item description"])
+    if c_line:
+        df["Line"] = df[c_line].map(_map_qb_line_to_canonical)
+    else:
+        df["Line"] = ""
+
     return df
 
 
