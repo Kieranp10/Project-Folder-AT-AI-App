@@ -61,6 +61,11 @@ def load_data():
     df = pd.read_excel("master_orders.xlsx")
     df.columns = df.columns.str.strip()
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+
+    # FIX: ensure numeric totals work properly
+    df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
+    df = df.dropna(subset=["Amount"])
+
     return df
 
 df = load_data()
@@ -72,8 +77,7 @@ df = load_data()
 USERS = {
     "admin": "1234",
     "manager": "pass123",
-    "viewer": "view123",
-    "Kieran": "Kr557"
+    "viewer": "view123"
 }
 
 if "logged_in" not in st.session_state:
@@ -104,25 +108,19 @@ st.title("🌱 Nursery Intelligence System")
 tab1, tab2 = st.tabs(["🧠 AI Sales Assistant", "📊 Dashboard"])
 
 # =====================================================
-# AI SALES ASSISTANT (UPGRADED ONLY HERE)
+# AI SALES ASSISTANT (FIXED + ENHANCED)
 # =====================================================
 
 with tab1:
 
     st.header("🧠 Ask Your Data")
 
-    question = st.text_input(
-        "Ask things like:\n"
-        "- How many seedlings did we sell?\n"
-        "- Which crop sold best in Petunia Hybrids?\n"
-        "- Compare 20cm Aero Bowl vs 25cm Hanging Basket\n"
-        "- Which month sold Petunia Hybrids the most?"
-    )
+    question = st.text_input("Ask your question")
 
     if question:
 
         # =================================================
-        # AI QUERY ENGINE (UPGRADED)
+        # AI QUERY ENGINE (IMPROVED)
         # =================================================
 
         prompt = f"""
@@ -133,28 +131,32 @@ Convert the question into structured JSON.
 KNOWN LINES:
 {KNOWN_LINES}
 
-You MUST extract ALL relevant filters and understand multi-condition queries.
+IMPORTANT RULES:
+- A question may contain multiple filters
+- Support line, crop, variety, client/store
+- Support comparisons (X vs Y)
+- Support time filters (month, year, last year, this year)
 
-DATE RULES:
-- "last year" = previous full year
-- "this year" = current year
-- month names convert to numbers
-- combinations allowed (May last year, March this year)
+CLIENT RULES:
+- store = Client Name
+- client = Client Name
+- shop = Client Name
 
 METRICS:
-- total = sum of Amount
-- top = best performer
-- compare = compare multiple items
-- monthly_top = best month in dataset
+- total
+- top
+- compare
+- monthly_top
+- top_client
 
-GROUP BY OPTIONS:
+GROUP BY:
 - line
 - crop
 - variety
 - client
 
 COMPARE RULE:
-If user says "compare X vs Y", put them in compare.items
+If comparing items, put them in compare.items
 
 OUTPUT ONLY VALID JSON:
 
@@ -198,9 +200,9 @@ QUESTION:
             st.write(raw)
             st.stop()
 
-        # =====================================================
-        # SMART FALLBACK (IMPORTANT UPGRADE)
-        # =====================================================
+        # =================================================
+        # SMART FALLBACK (IMPORTANT)
+        # =================================================
 
         if not q.get("metric"):
 
@@ -208,6 +210,8 @@ QUESTION:
 
             if "compare" in q_lower:
                 q["metric"] = "compare"
+            elif "client" in q_lower or "store" in q_lower or "who bought" in q_lower:
+                q["metric"] = "top_client"
             elif "month" in q_lower:
                 q["metric"] = "monthly_top"
             elif "most" in q_lower or "best" in q_lower:
@@ -220,7 +224,7 @@ QUESTION:
         df_temp = df.copy()
 
         # =================================================
-        # FILTERS
+        # FILTERING
         # =================================================
 
         for line in q.get("filters", {}).get("line", []):
@@ -236,7 +240,7 @@ QUESTION:
             df_temp = df_temp[df_temp["Client Name"].str.contains(client_name, case=False, na=False)]
 
         # =================================================
-        # DATE FILTERS
+        # DATE FILTERING
         # =================================================
 
         q_lower = question.lower()
@@ -299,6 +303,19 @@ QUESTION:
             st.plotly_chart(fig, use_container_width=True)
 
         # -------------------------
+        # TOP CLIENT (FIXED)
+        # -------------------------
+        elif metric == "top_client":
+
+            result = df_temp.groupby("Client Name")["Amount"].sum().sort_values(ascending=False).head(10)
+
+            st.subheader("Top Clients / Stores")
+            st.dataframe(result)
+
+            fig = px.bar(x=result.index, y=result.values)
+            st.plotly_chart(fig, use_container_width=True)
+
+        # -------------------------
         # MONTHLY TOP
         # -------------------------
         elif metric == "monthly_top":
@@ -312,7 +329,7 @@ QUESTION:
             st.plotly_chart(fig)
 
         # -------------------------
-        # COMPARE
+        # COMPARE (FIXED + MULTI-COLUMN SMART)
         # -------------------------
         elif metric == "compare":
 
@@ -320,15 +337,35 @@ QUESTION:
 
             results = {}
 
-            for item in items:
-                temp = df_temp[df_temp["Crop Name"].str.contains(item, case=False, na=False)]
-                results[item] = temp["Amount"].sum()
+            def detect_column(item):
 
-            st.subheader("Comparison")
+                item_lower = item.lower()
+
+                for line in KNOWN_LINES:
+                    if item_lower in line.lower():
+                        return "Line"
+
+                if df["Crop Name"].str.contains(item, case=False, na=False).any():
+                    return "Crop Name"
+
+                if df["Variety"].str.contains(item, case=False, na=False).any():
+                    return "Variety"
+
+                return "Client Name"
+
+            for item in items:
+
+                col = detect_column(item)
+
+                temp = df_temp[df_temp[col].str.contains(item, case=False, na=False)]
+
+                results[f"{item} ({col})"] = temp["Amount"].sum()
+
+            st.subheader("Comparison Results")
             st.dataframe(results)
 
             fig = px.bar(x=list(results.keys()), y=list(results.values()))
-            st.plotly_chart(fig)
+            st.plotly_chart(fig, use_container_width=True)
 
         # -------------------------
         # DEFAULT
