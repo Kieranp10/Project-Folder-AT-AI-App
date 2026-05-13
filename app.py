@@ -122,28 +122,24 @@ def get_openai_client():
     return _openai_client
 
 
-def summarize_comparison(question: str, result_lines: list) -> str | None:
+def summarize_insights(question: str, data: str, system_prompt: str) -> str | None:
     client = get_openai_client()
-    if not client or not result_lines:
+    if not client or not data:
         return None
     try:
-        body = "\n".join(result_lines)
         r = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You assist nursery staff. Interpret sales comparison numbers briefly "
-                        "and practically (2–5 short bullets, plain English)."
-                    ),
+                    "content": system_prompt,
                 },
                 {
                     "role": "user",
-                    "content": f"User question: {question}\n\nData:\n{body}\n\nSummarize insights.",
+                    "content": f"Question: {question}\n\nData:\n{data}\n\nProvide insights.",
                 },
             ],
-            max_tokens=350,
+            max_tokens=200,
         )
         return (r.choices[0].message.content or "").strip() or None
     except Exception:
@@ -1101,7 +1097,13 @@ if question:
         net_sales = sales_amt - returns_amt
 
         item_name = intent["line"] or intent["crop"] or intent["variety"] or "items"
-        st.info(f"I see there were {ordered_qty:,.0f} {item_name} ordered, but there was R{sales_amt:,.2f} worth of sales and R{returns_amt:,.2f} in returns, giving R{net_sales:,.2f} in net sales.")
+        data = f"Ordered Quantity: {ordered_qty:,.0f}\nSales Amount: R{sales_amt:,.2f}\nReturns Amount: R{returns_amt:,.2f}\nNet Sales: R{net_sales:,.2f}"
+        system_prompt = "You assist nursery management. Provide a concise, insightful summary of the ordering and sales performance for the product, highlighting key metrics and implications in 2-4 sentences."
+        insight = summarize_insights(question, data, system_prompt)
+        if insight:
+            st.info(insight)
+        else:
+            st.info(f"I see there were {ordered_qty:,.0f} {item_name} ordered, but there was R{sales_amt:,.2f} worth of sales and R{returns_amt:,.2f} in returns, giving R{net_sales:,.2f} in net sales.")
 
     if intent["compare"] and not compare_sources:
         run_comparison(question, df_active, intent["metric"])
