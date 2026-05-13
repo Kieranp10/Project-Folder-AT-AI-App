@@ -162,10 +162,9 @@ def load_data():
 
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
-    if "Quantity" in df.columns:
-        df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").fillna(0)
-    else:
-        df["Quantity"] = 0
+    # For master orders, Amount is actually the quantity ordered
+    df["Quantity"] = df["Amount"]
+    df["Amount"] = 0  # No rand values in master orders
 
     return df
 
@@ -1152,7 +1151,7 @@ with tab_about:
         """
 | Source | Best for | Limitation |
 |--------|-----------|------------|
-| **Rep orders (app)** | Crop, variety, customer/place, what was **ordered** (quantity & value) | Not exact sell-through; can double-count or replace stock |
+| **Rep orders (app)** | Crop, variety, customer/place, what was **ordered** (quantity & order amount, not rands) | Not exact sell-through; can double-count or replace stock |
 | **QuickBooks** | **Money**: sales vs credits, **line** rollups (quantity & amount) | Usually no per-crop breakdown like the app |
 
 The search bar uses the **sidebar data source**, unless your question clearly asks for the other (e.g. "QuickBooks" / "invoices" vs "orders" / "crops").
