@@ -1068,6 +1068,41 @@ if question:
 
     ql = question.lower()
 
+    # Combined summary for line/crop/variety queries
+    if (intent["line"] or intent["crop"] or intent["variety"]) and df_qb is not None and df_orders is not None and not compare_sources:
+        summary_intent = {
+            "line": intent["line"],
+            "crop": intent["crop"],
+            "variety": intent["variety"],
+            "client": intent["client"],
+            "year": intent["year"],
+            "month": intent["month"],
+            "day": intent["day"],
+        }
+        # Ordered quantity
+        ordered_intent = summary_intent.copy()
+        ordered_intent["metric"] = "quantity"
+        ordered_df = apply_filters(df_orders, ordered_intent)
+        ordered_qty = ordered_df["Quantity"].sum()
+
+        # Sales amount
+        sales_intent = summary_intent.copy()
+        sales_intent["doc_type"] = "invoice"
+        sales_intent["metric"] = "amount"
+        sales_df = apply_filters(df_qb, sales_intent)
+        sales_amt = sales_df["Amount"].sum()
+
+        # Returns amount
+        returns_intent = summary_intent.copy()
+        returns_intent["doc_type"] = "credit"
+        returns_df = apply_filters(df_qb, returns_intent)
+        returns_amt = abs(returns_df["Amount"].sum())
+
+        net_sales = sales_amt - returns_amt
+
+        item_name = intent["line"] or intent["crop"] or intent["variety"] or "items"
+        st.info(f"I see there were {ordered_qty:,.0f} {item_name} ordered, but there was R{sales_amt:,.2f} worth of sales and R{returns_amt:,.2f} in returns, giving R{net_sales:,.2f} in net sales.")
+
     if intent["compare"] and not compare_sources:
         run_comparison(question, df_active, intent["metric"])
         df_temp = df_active.copy()
