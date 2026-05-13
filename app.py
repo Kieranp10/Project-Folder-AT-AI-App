@@ -448,6 +448,13 @@ def catalog_matches_fuzzy(question: str, catalog: list[str], min_chars: int = 2)
     return out
 
 
+def get_sorted_crops_and_varieties(df_in: pd.DataFrame | None) -> tuple[list[str], list[str]]:
+    fn = globals().get("sorted_crops_and_varieties")
+    if callable(fn):
+        return fn(df_in)
+    return [], []
+
+
 def sorted_crops_and_varieties(df_in: pd.DataFrame | None) -> tuple[list[str], list[str]]:
     if df_in is None:
         return [], []
@@ -548,7 +555,7 @@ def detect_intent(q: str, df_in: pd.DataFrame | None = None):
     intent["client"] = None
 
     if df_in is not None:
-        crops_cat, var_cat = sorted_crops_and_varieties(df_in)
+        crops_cat, var_cat = get_sorted_crops_and_varieties(df_in)
         pline = intent["line"]
         crop_hits = catalog_matches_fuzzy(q, crops_cat, min_chars=3)
         var_hits = catalog_matches_fuzzy(q, var_cat, min_chars=2)
@@ -625,7 +632,7 @@ def run_comparison(question: str, df_in: pd.DataFrame, metric: str = "amount"):
     lines = lines_matching_query(question)
     years_q = extract_years_from_query(ql)
     months_q = extract_months_from_query(ql)
-    crops_catalog, varieties_catalog = sorted_crops_and_varieties(df_in)
+    crops_catalog, varieties_catalog = get_sorted_crops_and_varieties(df_in)
     crops_found = catalog_matches_fuzzy(question, crops_catalog, min_chars=3)
     varieties_found = catalog_matches_fuzzy(question, varieties_catalog, min_chars=2)
 
