@@ -165,7 +165,22 @@ def load_data():
     return df
 
 
-df = load_data()
+df_orders = load_data()
+
+
+def _first_column(df: pd.DataFrame, candidates: list[str]) -> str | None:
+    cols = {str(c).strip().lower(): c for c in df.columns}
+    for cand in candidates:
+        key = cand.strip().lower()
+        if key in cols:
+            return cols[key]
+    for c in df.columns:
+        cl = str(c).strip().lower()
+        for cand in candidates:
+            if cand.strip().lower() in cl:
+                return c
+    return None
+
 
 # =====================================================
 # KNOWN LINES
@@ -234,13 +249,15 @@ MONTH_WORDS = {
 
 @st.cache_data
 def sorted_crops_and_varieties(_df: pd.DataFrame):
+    if "Crop Name" not in _df.columns or "Variety" not in _df.columns:
+        return [], []
     crops = sorted(
-        _df["Crop Name"].dropna().astype(str).unique(),
+        [x for x in _df["Crop Name"].dropna().astype(str).unique() if str(x).strip()],
         key=lambda x: len(str(x)),
         reverse=True,
     )
     varieties = sorted(
-        _df["Variety"].dropna().astype(str).unique(),
+        [x for x in _df["Variety"].dropna().astype(str).unique() if str(x).strip()],
         key=lambda x: len(str(x)),
         reverse=True,
     )
@@ -343,6 +360,70 @@ def primary_line_from_query(question: str) -> str | None:
     return max(hits, key=len)
 
 
+def _map_qb_line_to_canonical(raw: str) -> str:
+    s = str(raw).strip()
+    if not s or s.lower() == "nan":
+        return ""
+    sl = normalize_for_match(s)
+    for kl in sorted(KNOWN_LINES, key=len, reverse=True):
+        kln = normalize_for_match(kl)
+        if kln in sl or sl in kln:
+            return kl
+        if line_tokens_match_query(kl, s):
+            return kl
+    return s.strip()
+
+
+@st.cache_data
+def load_quickbooks(path: str | None = None) -> pd.DataFrame | None:
+    """Load QuickBooks line export (invoices + credit notes). Returns None if file missing."""
+    p = (path or os.getenv("QUICKBOOKS_XLSX") or "quickbooks_lines.xlsx").strip()
+    if not p or not os.path.isfile(p):
+        return None
+    try:
+        raw = pd.read_excel(p)
+    except Exception:
+        return None
+    raw.columns = raw.columns.astype(str).str.strip()
+
+    c_date = _first_column(raw, ["Date", "Txn date", "Transaction date", "Invoice date", "Posting date"])
+    c_line = _first_column(raw, ["Line", "Product/service", "Item", "Description", "Class", "Item description"])
+    c_amt = _first_column(raw, ["Amount", "Net amount", "Line amount", "Sales price", "Total"])
+    if not c_date or not c_amt:
+        return None
+    if not c_line:
+        c_line = c_amt
+
+    c_type = _first_column(
+        raw,
+        ["Transaction type", "Txn type", "Type", "Document type", "Memo", "Source"],
+    )
+    c_customer = _first_column(raw, ["Customer", "Customer name", "Name"])
+    c_doc = _first_column(raw, ["Num", "No", "Doc no", "Invoice no", "Reference"])
+
+    out = pd.DataFrame()
+    out["Date"] = pd.to_datetime(raw[c_date], errors="coerce")
+    out["Line"] = raw[c_line].map(_map_qb_line_to_canonical)
+    amt = pd.to_numeric(raw[c_amt], errors="coerce").fillna(0.0)
+    if c_type:
+        types = raw[c_type].astype(str).str.lower()
+        is_credit = types.str.contains(r"credit|refund|return|credit memo|credit note", regex=True, na=False)
+        amt = amt.where(~is_credit | (amt <= 0), -amt.abs())
+    out["Amount"] = amt
+    out["QB_DocType"] = raw[c_type] if c_type else ""
+    out["Client Name"] = raw[c_customer] if c_customer else ""
+    out["QB_DocNo"] = raw[c_doc] if c_doc else ""
+    out["Crop Name"] = ""
+    out["Variety"] = ""
+    out = out.dropna(subset=["Date"], how="all")
+    out = out[out["Line"].astype(str).str.len() > 0]
+    return out
+
+
+df_qb = load_quickbooks()
+df = df_orders
+
+
 def catalog_subsumed_by_line(line: str, catalog_name: str) -> bool:
     """True if a crop/variety label repeats the line name in a looser/shorter form (e.g. Petunia vs PETUNIA HYBRIDS)."""
     ln = normalize_for_match(line)
@@ -405,11 +486,11 @@ def filter_sales(
     out = d.copy()
     if line:
         out = out[out["Line"].astype(str).str.contains(line, case=False, na=False)]
-    if crop:
+    if crop and "Crop Name" in out.columns:
         out = out[out["Crop Name"].astype(str).str.contains(crop, case=False, na=False)]
-    if variety:
+    if variety and "Variety" in out.columns:
         out = out[out["Variety"].astype(str).str.contains(variety, case=False, na=False)]
-    if client:
+    if client and "Client Name" in out.columns:
         out = out[out["Client Name"].astype(str).str.contains(client, case=False, na=False)]
     if years:
         out = out[out["Date"].dt.year.isin(years)]
@@ -496,13 +577,13 @@ def apply_filters(df_in, intent):
     if intent["line"]:
         d = d[d["Line"].astype(str).str.contains(intent["line"], case=False, na=False)]
 
-    if intent["crop"]:
+    if intent["crop"] and "Crop Name" in d.columns:
         d = d[d["Crop Name"].astype(str).str.contains(intent["crop"], case=False, na=False)]
 
-    if intent["variety"]:
+    if intent["variety"] and "Variety" in d.columns:
         d = d[d["Variety"].astype(str).str.contains(intent["variety"], case=False, na=False)]
 
-    if intent["client"]:
+    if intent["client"] and "Client Name" in d.columns:
         d = d[d["Client Name"].astype(str).str.contains(intent["client"], case=False, na=False)]
 
     if intent["year"]:
@@ -666,37 +747,175 @@ def run_comparison(question: str, df_in: pd.DataFrame):
     st.caption(f"Filters applied — years: {year_filter or 'any'}, months: {month_filter or 'any'}")
 
 
+QB_KEYWORDS = (
+    "quickbooks",
+    "qb ",
+    " qb",
+    "credit note",
+    "credit memo",
+    "invoice total",
+    "actual sales",
+    "financial",
+    "accurate sales",
+    "returns",
+    "from qb",
+)
+ORDER_KEYWORDS = (
+    "rep order",
+    "app order",
+    "what we ordered",
+    "ordered for",
+    "crop",
+    "variety",
+    "master order",
+    "store order",
+    "from app",
+)
+
+
+def resolve_active_dataframe(
+    question: str,
+    sidebar_choice: str,
+    orders_df: pd.DataFrame,
+    qb_df: pd.DataFrame | None,
+) -> tuple[pd.DataFrame, str, bool]:
+    """Pick which dataframe powers the search bar. Returns (df, label, compare_sources_mode)."""
+    ql = (question or "").lower()
+    has_qb = qb_df is not None and len(qb_df) > 0
+
+    if has_qb and sidebar_choice.startswith("Compare"):
+        return orders_df, "compare_sources", True
+
+    if has_qb and sidebar_choice.startswith("QuickBooks"):
+        return qb_df, "QuickBooks (invoices & credits, line level)", False
+
+    if has_qb and any(k in ql for k in QB_KEYWORDS):
+        if not any(k in ql for k in ORDER_KEYWORDS):
+            return qb_df, "QuickBooks (from your question)", False
+
+    if any(k in ql for k in ORDER_KEYWORDS) and has_qb and not sidebar_choice.startswith("QuickBooks"):
+        return orders_df, "Rep orders (from your question)", False
+
+    return orders_df, "Rep orders (app)", False
+
+
+def render_orders_vs_quickbooks(question: str, orders_df: pd.DataFrame, qb_df: pd.DataFrame):
+    ql = (question or "").lower()
+    lines = lines_matching_query(question) if ql else []
+    years = extract_years_from_query(ql)
+    months = extract_months_from_query(ql)
+    yf = years if years else None
+    mf = months if months else None
+
+    st.subheader("Rep orders vs QuickBooks (line level)")
+    if lines:
+        rows = []
+        for line in lines[:15]:
+            o = float(filter_sales(orders_df, line=line, years=yf, months=mf)["Amount"].sum())
+            q = float(filter_sales(qb_df, line=line, years=yf, months=mf)["Amount"].sum())
+            rows.append({"Line": line, "Rep_app_Amount": o, "QB_net_Amount": q})
+        tdf = pd.DataFrame(rows)
+    else:
+        o_s = orders_df.groupby("Line", dropna=False)["Amount"].sum()
+        q_s = qb_df.groupby("Line", dropna=False)["Amount"].sum()
+        tdf = pd.DataFrame({"Rep_app_Amount": o_s, "QB_net_Amount": q_s}).fillna(0)
+        tdf = tdf.sort_values("Rep_app_Amount", ascending=False).head(30)
+        tdf = tdf.reset_index()
+
+    st.dataframe(tdf, use_container_width=True)
+    if len(tdf) > 0:
+        id_col = "Line" if "Line" in tdf.columns else tdf.columns[0]
+        tdf_m = tdf.melt(
+            id_vars=[id_col],
+            value_vars=["Rep_app_Amount", "QB_net_Amount"],
+            var_name="Source",
+            value_name="Amount",
+        )
+        fig = px.bar(
+            tdf_m,
+            x=id_col,
+            y="Amount",
+            color="Source",
+            barmode="group",
+            labels={id_col: "Line"},
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.caption(
+        "Rep app: ordering data (crop/place detail; can include duplicates or replenishment). "
+        "QuickBooks: invoice + credit line amounts in your file’s currency (net sales vs returns at line level)."
+    )
+
+
 # =====================================================
 # UI
 # =====================================================
 
 st.title("Nursery Intelligence Copilot v2.1")
 
+with st.sidebar:
+    st.subheader("Data source")
+    qb_ok = df_qb is not None and len(df_qb) > 0
+    if not qb_ok:
+        st.caption(
+            "Add **quickbooks_lines.xlsx** next to `app.py` (or set **QUICKBOOKS_XLSX** path) to load invoices/credits."
+        )
+    opts = ["Rep orders (app — crop & store detail)"]
+    if qb_ok:
+        opts.append("QuickBooks (accurate money — line level)")
+        opts.append("Compare rep orders vs QuickBooks (by line)")
+    data_choice = st.radio("Use for the search bar", opts, index=0, key="data_source_radio")
+
+with st.expander("How rep orders vs QuickBooks fit together"):
+    st.markdown(
+        """
+**Rep orders (app)** — What reps ordered for stores: best for **which crops/varieties** went to **which places**.  
+Totals are **not** the same as final sales (duplicates, swaps, top-ups).
+
+**QuickBooks** — **Invoices and credit notes**: best for **Rand (or file currency)**, **sales vs returns**, and **true line-level revenue**.  
+QuickBooks usually **does not** break out each crop the way your app does.
+
+Use **Compare** to put the two side by side on **Line** (same names as in your app where possible).
+        """
+    )
+
 question = st.text_input("Ask anything about sales")
+
+df_active, source_label, compare_sources = resolve_active_dataframe(
+    question, data_choice, df_orders, df_qb
+)
+st.caption(f"Active dataset: **{source_label}**")
 
 if question:
 
-    intent = detect_intent(question, df)
-    df_temp = apply_filters(df, intent)
+    intent = detect_intent(question, df_active)
+
+    if compare_sources and qb_ok:
+        render_orders_vs_quickbooks(question, df_orders, df_qb)
+
+    df_temp = apply_filters(df_active, intent)
 
     if len(df_temp) == 0:
-        df_temp = df.copy()
+        df_temp = df_active.copy()
 
     ql = question.lower()
 
-    if intent["compare"]:
-        run_comparison(question, df)
-        df_temp = df.copy()
+    if intent["compare"] and not compare_sources:
+        run_comparison(question, df_active)
+        df_temp = df_active.copy()
 
     elif intent["top"]:
 
         group_col = "Client Name"
-
-        if "crop" in ql:
+        if "crop" in ql and "Crop Name" in df_temp.columns:
             group_col = "Crop Name"
-        elif "variety" in ql:
+        elif "variety" in ql and "Variety" in df_temp.columns:
             group_col = "Variety"
-        elif "line" in ql:
+        elif "line" in ql or "Crop Name" not in df_temp.columns:
+            group_col = "Line"
+        elif "client" in ql and "Client Name" in df_temp.columns:
+            group_col = "Client Name"
+        else:
             group_col = "Line"
 
         result = df_temp.groupby(group_col)["Amount"].sum().sort_values(ascending=False).head(10)
@@ -707,10 +926,10 @@ if question:
         fig = px.bar(x=result.index, y=result.values)
         st.plotly_chart(fig, use_container_width=True)
 
-    else:
+    elif not compare_sources:
 
         total = df_temp["Amount"].sum()
-        st.success(f"Total Sold: {total:,}")
+        st.success(f"Total: {total:,}")
 
     st.subheader("Matching Data")
     if intent["compare"]:
@@ -721,17 +940,49 @@ if question:
 
 st.header("Dashboard")
 
-col1, col2, col3 = st.columns(3)
+tab_orders, tab_qb, tab_about = st.tabs(["Rep orders", "QuickBooks", "About the data"])
 
-col1.metric("Orders", len(df))
-col2.metric("Total Amount", f"{df['Amount'].sum():,}")
-col3.metric("Clients", df["Client Name"].nunique())
+with tab_orders:
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Orders", len(df_orders))
+    col2.metric("Total Amount", f"{df_orders['Amount'].sum():,}")
+    col3.metric("Clients", df_orders["Client Name"].nunique())
+    st.subheader("Top Clients")
+    st.dataframe(df_orders.groupby("Client Name")["Amount"].sum().sort_values(ascending=False).head(10))
+    st.subheader("Top Crops")
+    st.dataframe(df_orders.groupby("Crop Name")["Amount"].sum().sort_values(ascending=False).head(10))
+    st.subheader("Top Lines")
+    st.dataframe(df_orders.groupby("Line")["Amount"].sum().sort_values(ascending=False).head(10))
 
-st.subheader("Top Clients")
-st.dataframe(df.groupby("Client Name")["Amount"].sum().sort_values(ascending=False).head(10))
+with tab_qb:
+    if not qb_ok:
+        st.info(
+            "Place an Excel export from QuickBooks named **quickbooks_lines.xlsx** in this folder, "
+            "or set environment variable **QUICKBOOKS_XLSX** to the full path. "
+            "Expected columns include **Date**, a **line/item** column, and **Amount**; optional **Transaction type** "
+            "(rows with Credit / Credit memo / Refund are treated as returns)."
+        )
+    else:
+        sales_amt = df_qb.loc[df_qb["Amount"] > 0, "Amount"].sum()
+        ret_amt = df_qb.loc[df_qb["Amount"] < 0, "Amount"].sum()
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("QB rows", len(df_qb))
+        c2.metric("Net total", f"{df_qb['Amount'].sum():,.2f}")
+        c3.metric("Sales (positive lines)", f"{sales_amt:,.2f}")
+        c4.metric("Returns (negative lines)", f"{ret_amt:,.2f}")
+        st.subheader("Net by line")
+        st.dataframe(df_qb.groupby("Line")["Amount"].sum().sort_values(ascending=False))
+        st.subheader("Sample rows")
+        st.dataframe(df_qb.head(50))
 
-st.subheader("Top Crops")
-st.dataframe(df.groupby("Crop Name")["Amount"].sum().sort_values(ascending=False).head(10))
+with tab_about:
+    st.markdown(
+        """
+| Source | Best for | Limitation |
+|--------|-----------|------------|
+| **Rep orders (app)** | Crop, variety, customer/place, what was **ordered** | Not exact sell-through; can double-count or replace stock |
+| **QuickBooks** | **Money**: sales vs credits, **line** rollups | Usually no per-crop breakdown like the app |
 
-st.subheader("Top Lines")
-st.dataframe(df.groupby("Line")["Amount"].sum().sort_values(ascending=False).head(10))
+The search bar uses the **sidebar data source**, unless your question clearly asks for the other (e.g. “QuickBooks” / “invoices” vs “orders” / “crops”).
+        """
+    )
