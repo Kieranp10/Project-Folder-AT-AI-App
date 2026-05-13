@@ -455,6 +455,67 @@ def get_sorted_crops_and_varieties(df_in: pd.DataFrame | None) -> tuple[list[str
     return [], []
 
 
+MONTH_WORDS = {
+    "january": 1, "jan": 1,
+    "february": 2, "feb": 2,
+    "march": 3, "mar": 3,
+    "april": 4, "apr": 4,
+    "may": 5,
+    "june": 6, "jun": 6,
+    "july": 7, "jul": 7,
+    "august": 8, "aug": 8,
+    "september": 9, "sep": 9, "sept": 9,
+    "october": 10, "oct": 10,
+    "november": 11, "nov": 11,
+    "december": 12, "dec": 12,
+}
+
+
+def extract_day_month_year_from_query(ql: str) -> dict[str, int | None]:
+    out = {"day": None, "month": None, "year": None}
+    day_match = re.search(r"\b(\d{1,2})\s+(?:of|st|nd|rd|th)?\b", ql)
+    if day_match:
+        d = int(day_match.group(1))
+        if 1 <= d <= 31:
+            out["day"] = d
+    return out
+
+
+def extract_years_from_query(ql: str) -> list[int]:
+    years = re.findall(r"\b(20\d{2})\b", ql)
+    return [int(y) for y in years]
+
+
+def extract_months_from_query(ql: str) -> list[int]:
+    months = []
+    for m, v in MONTH_WORDS.items():
+        if m in ql:
+            months.append(v)
+    return months
+
+
+def extract_invoice_number_from_query(ql: str) -> str | None:
+    match = re.search(r"\b(?:invoice|inv|doc|ref)\.?\s*(?:no\.?|#)?\s*(\d+)\b", ql)
+    if match:
+        return match.group(1)
+    match = re.search(r"\b#(\d+)\b", ql)
+    if match:
+        return match.group(1)
+    return None
+
+
+def is_credit_query(ql: str) -> bool:
+    return any(x in ql for x in ["credit", "return", "refund", "credit note", "credit memo"])
+
+
+def is_invoice_query(ql: str) -> bool:
+    return any(x in ql for x in ["invoice", "inv", "doc no"])
+
+
+def is_sales_query(ql: str) -> bool:
+    return any(x in ql for x in ["sold", "sales", "revenue", "amount"])
+
+
 def sorted_crops_and_varieties(df_in: pd.DataFrame | None) -> tuple[list[str], list[str]]:
     if df_in is None:
         return [], []
