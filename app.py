@@ -4,6 +4,7 @@ import os
 import re
 import unicodedata
 from difflib import SequenceMatcher
+from pathlib import Path
 
 import streamlit as st
 import pandas as pd
@@ -374,14 +375,45 @@ def _map_qb_line_to_canonical(raw: str) -> str:
     return s.strip()
 
 
+def _app_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def discover_quickbooks_excel_path() -> str | None:
+    """Resolve QB export next to this script (not cwd). Tries env QUICKBOOKS_XLSX then common filenames."""
+    base = _app_dir()
+    env = os.getenv("QUICKBOOKS_XLSX", "").strip()
+    if env:
+        p = Path(env)
+        if not p.is_absolute():
+            p = base / p
+        if p.is_file():
+            return str(p)
+    for name in (
+        "quickbooks_lines.xlsx",
+        "quickbooks_line.xlsx",
+        "QuickBooks_Lines.xlsx",
+        "QuickBooks_Line.xlsx",
+    ):
+        fp = base / name
+        if fp.is_file():
+            return str(fp)
+    for fp in sorted(base.glob("quickbooks*.xlsx"), key=lambda x: str(x).lower()):
+        if fp.is_file():
+            return str(fp)
+    for fp in sorted(base.glob("quickbooks*.xls"), key=lambda x: str(x).lower()):
+        if fp.is_file():
+            return str(fp)
+    return None
+
+
 @st.cache_data
-def load_quickbooks(path: str | None = None) -> pd.DataFrame | None:
-    """Load QuickBooks line export (invoices + credit notes). Returns None if file missing."""
-    p = (path or os.getenv("QUICKBOOKS_XLSX") or "quickbooks_lines.xlsx").strip()
-    if not p or not os.path.isfile(p):
+def load_quickbooks(resolved_path: str, _file_mtime: float) -> pd.DataFrame | None:
+    """Load QuickBooks line export (invoices + credit notes). `_file_mtime` busts cache when the file changes."""
+    if not resolved_path or not os.path.isfile(resolved_path):
         return None
     try:
-        raw = pd.read_excel(p)
+        raw = pd.read_excel(resolved_path)
     except Exception:
         return None
     raw.columns = raw.columns.astype(str).str.strip()
@@ -420,7 +452,11 @@ def load_quickbooks(path: str | None = None) -> pd.DataFrame | None:
     return out
 
 
-df_qb = load_quickbooks()
+_qb_resolved = discover_quickbooks_excel_path()
+if _qb_resolved:
+    df_qb = load_quickbooks(_qb_resolved, os.path.getmtime(_qb_resolved))
+else:
+    df_qb = None
 df = df_orders
 
 
@@ -858,7 +894,8 @@ with st.sidebar:
     qb_ok = df_qb is not None and len(df_qb) > 0
     if not qb_ok:
         st.caption(
-            "Add **quickbooks_lines.xlsx** next to `app.py` (or set **QUICKBOOKS_XLSX** path) to load invoices/credits."
+            "Put **quickbooks_line.xlsx** or **quickbooks_lines.xlsx** in the same folder as "
+            "`app.py` (not only your working directory), or set **QUICKBOOKS_XLSX** to the full path."
         )
     opts = ["Rep orders (app — crop & store detail)"]
     if qb_ok:
@@ -957,8 +994,8 @@ with tab_orders:
 with tab_qb:
     if not qb_ok:
         st.info(
-            "Place an Excel export from QuickBooks named **quickbooks_lines.xlsx** in this folder, "
-            "or set environment variable **QUICKBOOKS_XLSX** to the full path. "
+            "Put an Excel export in the **same folder as app.py** named **quickbooks_line.xlsx** or "
+            "**quickbooks_lines.xlsx** (or any **quickbooks*.xlsx**), or set **QUICKBOOKS_XLSX** to the full file path. "
             "Expected columns include **Date**, a **line/item** column, and **Amount**; optional **Transaction type** "
             "(rows with Credit / Credit memo / Refund are treated as returns)."
         )
