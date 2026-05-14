@@ -9,19 +9,15 @@ import re
 import json
 
 # =====================================================
-# OPENAI
+# CONFIG
 # =====================================================
 
 client = OpenAI(
     api_key=os.getenv("OPENAI_API_KEY")
 )
 
-# =====================================================
-# PAGE CONFIG
-# =====================================================
-
 st.set_page_config(
-    page_title="Nursery Intelligence Copilot Enterprise",
+    page_title="Nursery Intelligence Copilot v2.2",
     layout="wide"
 )
 
@@ -38,11 +34,13 @@ BUILTIN_ADMIN_PASSWORD_HASH = (
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
+# =====================================================
+# LOGIN FUNCTIONS
+# =====================================================
 
 def user_password_hashes():
 
     try:
-
         u = st.secrets.get("users")
 
         if u is None:
@@ -62,7 +60,6 @@ def user_password_hashes():
     except Exception:
         return {}
 
-
 def verify_login(username, password):
 
     uname = (username or "").strip()
@@ -78,7 +75,8 @@ def verify_login(username, password):
         return True
 
     if (
-        uname.lower() == BUILTIN_ADMIN_USERNAME.lower()
+        uname.lower()
+        == BUILTIN_ADMIN_USERNAME.lower()
         and check_password_hash(
             BUILTIN_ADMIN_PASSWORD_HASH,
             password
@@ -88,10 +86,17 @@ def verify_login(username, password):
 
     return False
 
+# =====================================================
+# LOGIN PAGE
+# =====================================================
 
 if not st.session_state.authenticated:
 
     st.title("🌱 Nursery Intelligence Copilot")
+
+    st.info(
+        "Login using admin / 1234"
+    )
 
     with st.form("login_form"):
 
@@ -114,16 +119,50 @@ if not st.session_state.authenticated:
             ):
 
                 st.session_state.authenticated = True
-
                 st.rerun()
 
             else:
-
                 st.error(
                     "Invalid username or password"
                 )
 
     st.stop()
+
+# =====================================================
+# APP DIRECTORY
+# =====================================================
+
+def _app_dir():
+    return Path(__file__).resolve().parent
+
+# =====================================================
+# FIND COLUMN
+# =====================================================
+
+def _first_column(df, candidates):
+
+    cols = {
+        str(c).strip().lower(): c
+        for c in df.columns
+    }
+
+    for cand in candidates:
+
+        key = cand.strip().lower()
+
+        if key in cols:
+            return cols[key]
+
+    for c in df.columns:
+
+        cl = str(c).strip().lower()
+
+        for cand in candidates:
+
+            if cand.strip().lower() in cl:
+                return c
+
+    return None
 
 # =====================================================
 # KNOWN LINES
@@ -160,83 +199,77 @@ KNOWN_LINES = [
 ]
 
 # =====================================================
-# APP DIR
+# LOAD DATA FILES
 # =====================================================
 
-def app_dir():
+def _load_master_file(path, dataset_type="orders"):
 
-    return Path(__file__).resolve().parent
-
-# =====================================================
-# COLUMN DETECTION
-# =====================================================
-
-def first_column(df, candidates):
-
-    cols = {
-        str(c).strip().lower(): c
-        for c in df.columns
-    }
-
-    for cand in candidates:
-
-        key = cand.lower().strip()
-
-        if key in cols:
-            return cols[key]
-
-    for c in df.columns:
-
-        cl = str(c).strip().lower()
-
-        for cand in candidates:
-
-            if cand.lower() in cl:
-                return c
-
-    return None
-
-# =====================================================
-# LOAD FILE
-# =====================================================
-
-def load_excel_file(path):
-
-    candidate = app_dir() / path
+    candidate = _app_dir() / path
 
     if not candidate.is_file():
-        return pd.DataFrame()
+        candidate = Path(path)
+
+    if not candidate.is_file():
+        return None
 
     try:
-
         df = pd.read_excel(candidate)
 
     except Exception:
+        return None
 
-        return pd.DataFrame()
+    df.columns = df.columns.astype(str).str.strip()
 
-    df.columns = (
-        df.columns
-        .astype(str)
-        .str.strip()
+    # =================================================
+    # DATE
+    # =================================================
+
+    date_col = _first_column(
+        df,
+        ["Date"]
     )
 
-    # DATE
-
-    if "Date" in df.columns:
+    if date_col:
 
         df["Date"] = pd.to_datetime(
-            df["Date"],
+            df[date_col],
             errors="coerce"
         )
 
     else:
-
         df["Date"] = pd.NaT
 
-    # CLIENT
+    # =================================================
+    # LINE
+    # =================================================
 
-    c_client = first_column(
+    line_col = _first_column(
+        df,
+        [
+            "Lines",
+            "Line",
+            "Product/service",
+            "Item",
+            "Description"
+        ]
+    )
+
+    if line_col:
+
+        df["Line"] = (
+            df[line_col]
+            .astype(str)
+            .str.strip()
+        )
+
+    else:
+        df["Line"] = ""
+
+    # =================================================
+    # CLIENT
+    # =================================================
+
+    client_col = _first_column(
         df,
         [
             "Client name",
@@ -246,21 +279,22 @@ def load_excel_file(path):
         ]
     )
 
-    if c_client:
+    if client_col:
 
         df["Client Name"] = (
-            df[c_client]
+            df[client_col]
             .astype(str)
             .str.strip()
         )
 
     else:
-
         df["Client Name"] = ""
 
+    # =================================================
     # CROP
+    # =================================================
 
-    c_crop = first_column(
+    crop_col = _first_column(
         df,
         [
             "Crop name",
@@ -269,22 +303,23 @@ def load_excel_file(path):
         ]
     )
 
-    if c_crop:
+    if crop_col:
 
         df["Crop Name"] = (
-            df[c_crop]
+            df[crop_col]
             .astype(str)
-            .str.upper()
             .str.strip()
+            .str.upper()
         )
 
     else:
-
         df["Crop Name"] = ""
 
+    # =================================================
     # VARIETY
+    # =================================================
 
-    c_variety = first_column(
+    variety_col = _first_column(
         df,
         [
             "Variety",
@@ -293,43 +328,22 @@ def load_excel_file(path):
         ]
     )
 
-    if c_variety:
+    if variety_col:
 
         df["Variety"] = (
-            df[c_variety]
+            df[variety_col]
             .astype(str)
             .str.strip()
         )
 
     else:
-
         df["Variety"] = ""
 
-    # LINE
+    # =================================================
+    # REP / USER
+    # =================================================
 
-    c_line = first_column(
-        df,
-        [
-            "Lines",
-            "Line"
-        ]
-    )
-
-    if c_line:
-
-        df["Line"] = (
-            df[c_line]
-            .astype(str)
-            .str.strip()
-        )
-
-    else:
-
-        df["Line"] = ""
-
-    # REP
-
-    c_rep = first_column(
+    rep_col = _first_column(
         df,
         [
             "User",
@@ -338,99 +352,171 @@ def load_excel_file(path):
         ]
     )
 
-    if c_rep:
+    if rep_col:
 
         df["Rep"] = (
-            df[c_rep]
+            df[rep_col]
             .astype(str)
             .str.strip()
         )
 
     else:
-
         df["Rep"] = ""
 
-    # QUANTITY
+    # =================================================
+    # ORDERS DATA
+    # =================================================
 
-    c_qty = first_column(
-        df,
-        [
-            "Amount",
-            "Quantity",
-            "Qty"
-        ]
-    )
+    if dataset_type == "orders":
 
-    if c_qty:
+        qty_col = _first_column(
+            df,
+            ["Amount"]
+        )
 
-        df["Quantity"] = pd.to_numeric(
-            df[c_qty],
-            errors="coerce"
-        ).fillna(0)
+        if qty_col:
 
-    else:
+            df["Quantity"] = pd.to_numeric(
+                df[qty_col],
+                errors="coerce"
+            ).fillna(0)
 
-        df["Quantity"] = 0
-
-    # RAND AMOUNT
-
-    c_amount = first_column(
-        df,
-        [
-            "Sales",
-            "Rand",
-            "Total",
-            "Amount"
-        ]
-    )
-
-    if c_amount:
-
-        df["Amount"] = pd.to_numeric(
-            df[c_amount],
-            errors="coerce"
-        ).fillna(0)
-
-    else:
+        else:
+            df["Quantity"] = 0
 
         df["Amount"] = 0
+
+    # =================================================
+    # SALES / RETURNS
+    # =================================================
+
+    else:
+
+        qty_col = _first_column(
+            df,
+            [
+                "Quantity",
+                "Qty",
+                "Units"
+            ]
+        )
+
+        if qty_col:
+
+            df["Quantity"] = pd.to_numeric(
+                df[qty_col],
+                errors="coerce"
+            ).fillna(0)
+
+        else:
+            df["Quantity"] = 0
+
+        amount_col = _first_column(
+            df,
+            [
+                "Amount",
+                "Sales",
+                "Total",
+                "Rand"
+            ]
+        )
+
+        if amount_col:
+
+            df["Amount"] = pd.to_numeric(
+                df[amount_col],
+                errors="coerce"
+            ).fillna(0)
+
+        else:
+            df["Amount"] = 0
 
     return df
 
 # =====================================================
-# LOAD DATA
+# LOAD DATASETS
 # =====================================================
 
 @st.cache_data
 def load_orders():
 
-    return load_excel_file(
-        "master_orders.xlsx"
+    df = _load_master_file(
+        "master_orders.xlsx",
+        "orders"
     )
 
+    if df is None:
+
+        return pd.DataFrame(
+            columns=[
+                "Date",
+                "Line",
+                "Quantity",
+                "Crop Name",
+                "Variety",
+                "Client Name",
+                "Rep"
+            ]
+        )
+
+    return df
 
 @st.cache_data
 def load_sales():
 
-    return load_excel_file(
-        "master_sales.xlsx"
+    df = _load_master_file(
+        "master_sales.xlsx",
+        "sales"
     )
 
+    if df is None:
+
+        return pd.DataFrame(
+            columns=[
+                "Date",
+                "Line",
+                "Quantity",
+                "Amount",
+                "Crop Name",
+                "Variety",
+                "Client Name",
+                "Rep"
+            ]
+        )
+
+    return df
 
 @st.cache_data
 def load_returns():
 
-    return load_excel_file(
-        "master_returns.xlsx"
+    df = _load_master_file(
+        "master_returns.xlsx",
+        "returns"
     )
 
+    if df is None:
+
+        return pd.DataFrame(
+            columns=[
+                "Date",
+                "Line",
+                "Quantity",
+                "Amount",
+                "Crop Name",
+                "Variety",
+                "Client Name",
+                "Rep"
+            ]
+        )
+
+    return df
 
 df_orders = load_orders()
 df_sales = load_sales()
 df_returns = load_returns()
 
 # =====================================================
-# INTENT ENGINE
+# AI INTENT ENGINE
 # =====================================================
 
 def detect_intent(question):
@@ -438,25 +524,46 @@ def detect_intent(question):
     ql = question.lower()
 
     intent = {
-
         "compare": False,
         "top": False,
-        "metric": "quantity",
-        "source": "orders",
-
-        "line": None,
+        "line": [],
         "crop": None,
         "variety": None,
         "client": None,
         "rep": None,
-
         "year": None,
-        "month": None
+        "month": None,
+        "dataset": "orders"
     }
 
-    # ============================================
+    # =================================================
+    # DATASET
+    # =================================================
+
+    if any(
+        x in ql
+        for x in [
+            "sales",
+            "sold",
+            "revenue",
+            "rand"
+        ]
+    ):
+        intent["dataset"] = "sales"
+
+    if any(
+        x in ql
+        for x in [
+            "returns",
+            "returned",
+            "refund"
+        ]
+    ):
+        intent["dataset"] = "returns"
+
+    # =================================================
     # COMPARE
-    # ============================================
+    # =================================================
 
     if any(
         x in ql
@@ -466,12 +573,11 @@ def detect_intent(question):
             "versus"
         ]
     ):
-
         intent["compare"] = True
 
-    # ============================================
+    # =================================================
     # TOP
-    # ============================================
+    # =================================================
 
     if any(
         x in ql
@@ -482,87 +588,40 @@ def detect_intent(question):
             "most"
         ]
     ):
-
         intent["top"] = True
 
-    # ============================================
-    # SOURCE
-    # ============================================
-
-    if any(
-        x in ql
-        for x in [
-            "sales",
-            "sold",
-            "revenue"
-        ]
-    ):
-
-        intent["source"] = "sales"
-
-    if any(
-        x in ql
-        for x in [
-            "returns",
-            "returned",
-            "refund"
-        ]
-    ):
-
-        intent["source"] = "returns"
-
-    # ============================================
-    # METRIC
-    # ============================================
-
-    if any(
-        x in ql
-        for x in [
-            "rand",
-            "revenue",
-            "sales value",
-            "amount"
-        ]
-    ):
-
-        intent["metric"] = "amount"
-
-    # ============================================
-    # LINE
-    # ============================================
+    # =================================================
+    # LINE DETECTION
+    # =================================================
 
     for line in KNOWN_LINES:
 
         if line.lower() in ql:
+            intent["line"].append(line)
 
-            intent["line"] = line
-
-    # ============================================
+    # =================================================
     # YEAR
-    # ============================================
+    # =================================================
 
     current_year = pd.Timestamp.today().year
 
     if "last year" in ql:
-
         intent["year"] = current_year - 1
 
     if "this year" in ql:
-
         intent["year"] = current_year
 
-    years = re.findall(
+    year_match = re.findall(
         r"\b(20\d{2})\b",
         ql
     )
 
-    if years:
+    if year_match:
+        intent["year"] = int(year_match[0])
 
-        intent["year"] = int(years[0])
-
-    # ============================================
+    # =================================================
     # MONTH
-    # ============================================
+    # =================================================
 
     months = {
         "january": 1,
@@ -579,32 +638,80 @@ def detect_intent(question):
         "december": 12
     }
 
-    for m, num in months.items():
+    for m, v in months.items():
 
         if m in ql:
-
-            intent["month"] = num
+            intent["month"] = v
 
     return intent
 
 # =====================================================
-# FILTER ENGINE
+# FILTERS
 # =====================================================
 
 def apply_filters(df, intent):
 
     d = df.copy()
 
-    if len(d) == 0:
-        return d
+    if len(intent["line"]) > 0:
 
-    if intent["line"]:
+        pattern = "|".join(
+            intent["line"]
+        )
 
         d = d[
             d["Line"]
             .astype(str)
             .str.contains(
-                intent["line"],
+                pattern,
+                case=False,
+                na=False
+            )
+        ]
+
+    if intent["crop"]:
+
+        d = d[
+            d["Crop Name"]
+            .astype(str)
+            .str.contains(
+                intent["crop"],
+                case=False,
+                na=False
+            )
+        ]
+
+    if intent["variety"]:
+
+        d = d[
+            d["Variety"]
+            .astype(str)
+            .str.contains(
+                intent["variety"],
+                case=False,
+                na=False
+            )
+        ]
+
+    if intent["client"]:
+
+        d = d[
+            d["Client Name"]
+            .astype(str)
+            .str.contains(
+                intent["client"],
+                case=False,
+                na=False
+            )
+        ]
+
+    if intent["rep"]:
+
+        d = d[
+            d["Rep"]
+            .astype(str)
+            .str.contains(
+                intent["rep"],
                 case=False,
                 na=False
             )
@@ -627,303 +734,421 @@ def apply_filters(df, intent):
     return d
 
 # =====================================================
-# TITLE
+# MAIN APP
 # =====================================================
 
 st.title(
-    "🌱 Nursery Intelligence Copilot Enterprise"
+    "🌱 Nursery Intelligence Copilot v2.2"
+)
+
+tab1, tab2 = st.tabs(
+    [
+        "🧠 AI Assistant",
+        "📊 Dashboards"
+    ]
 )
 
 # =====================================================
-# SIDEBAR
+# AI TAB
 # =====================================================
 
-with st.sidebar:
+with tab1:
 
-    st.subheader("📁 Data")
-
-    st.write(
-        f"Orders Rows: {len(df_orders)}"
+    question = st.text_input(
+        "Ask anything about orders, sales, returns, crops, reps, varieties, clients or lines"
     )
 
-    st.write(
-        f"Sales Rows: {len(df_sales)}"
-    )
+    if question:
 
-    st.write(
-        f"Returns Rows: {len(df_returns)}"
-    )
+        intent = detect_intent(question)
 
-# =====================================================
-# AI SEARCH
-# =====================================================
+        # =============================================
+        # DATASET
+        # =============================================
 
-question = st.text_input(
-    "Ask anything about orders, sales, returns, crops, varieties, clients or reps"
-)
+        if intent["dataset"] == "sales":
 
-if question:
+            df_active = df_sales
+            dataset_name = "Sales"
 
-    intent = detect_intent(question)
+        elif intent["dataset"] == "returns":
 
-    # ============================================
-    # DATASET
-    # ============================================
+            df_active = df_returns
+            dataset_name = "Returns"
 
-    if intent["source"] == "sales":
+        else:
 
-        df_active = df_sales
+            df_active = df_orders
+            dataset_name = "Orders"
 
-        source_name = "Sales"
+        st.caption(
+            f"Using Dataset: {dataset_name}"
+        )
 
-    elif intent["source"] == "returns":
+        df_temp = apply_filters(
+            df_active,
+            intent
+        )
 
-        df_active = df_returns
+        # =============================================
+        # EMPTY CHECK
+        # =============================================
 
-        source_name = "Returns"
+        if len(df_temp) == 0:
 
-    else:
-
-        df_active = df_orders
-
-        source_name = "Orders"
-
-    st.caption(
-        f"Using Dataset: {source_name}"
-    )
-
-    # ============================================
-    # FILTER
-    # ============================================
-
-    df_temp = apply_filters(
-        df_active,
-        intent
-    )
-
-    # =====================================================
-    # ADVANCED COMPARE LOGIC
-    # =====================================================
-
-    if intent["compare"]:
-
-        ql = question.lower()
-
-        compare_items = []
-
-        for line in KNOWN_LINES:
-
-            if line.lower() in ql:
-
-                compare_items.append(line)
-
-        # ========================================
-        # SALES VS RETURNS
-        # ========================================
-
-        if (
-            "sales vs returns" in ql
-            or (
-                "sales" in ql
-                and "returns" in ql
-            )
-        ):
-
-            sales_filtered = apply_filters(
-                df_sales,
-                intent
+            st.warning(
+                "No matching data found"
             )
 
-            returns_filtered = apply_filters(
-                df_returns,
-                intent
-            )
+        else:
 
-            sales_amount = (
-                sales_filtered["Amount"]
-                .sum()
-            )
+            # =========================================
+            # COMPARE
+            # =========================================
 
-            returns_amount = (
-                returns_filtered["Amount"]
-                .sum()
-            )
+            if (
+                intent["compare"]
+                and len(intent["line"]) >= 2
+            ):
 
-            sales_qty = (
-                sales_filtered["Quantity"]
-                .sum()
-            )
+                results = {}
 
-            returns_qty = (
-                returns_filtered["Quantity"]
-                .sum()
-            )
+                for line in intent["line"]:
 
-            net_sales = (
-                sales_amount
-                - returns_amount
-            )
+                    temp = df_temp[
+                        df_temp["Line"]
+                        .astype(str)
+                        .str.contains(
+                            line,
+                            case=False,
+                            na=False
+                        )
+                    ]
 
-            compare_df = pd.DataFrame({
+                    if dataset_name == "Orders":
 
-                "Metric": [
+                        results[line] = (
+                            temp["Quantity"]
+                            .sum()
+                        )
 
-                    "Sales Amount",
-                    "Returns Amount",
-                    "Net Sales",
-                    "Sales Qty",
-                    "Returns Qty"
-                ],
+                    else:
 
-                "Value": [
+                        results[line] = (
+                            temp["Amount"]
+                            .sum()
+                        )
 
-                    sales_amount,
-                    returns_amount,
-                    net_sales,
-                    sales_qty,
-                    returns_qty
-                ]
-            })
+                st.subheader(
+                    "Comparison Results"
+                )
 
-            st.subheader(
-                "📊 Sales vs Returns"
-            )
+                compare_df = pd.DataFrame(
+                    {
+                        "Line": results.keys(),
+                        "Value": results.values()
+                    }
+                )
 
-            st.dataframe(compare_df)
+                st.dataframe(compare_df)
 
-            fig = px.bar(
-                compare_df,
-                x="Metric",
-                y="Value"
-            )
+                fig = px.bar(
+                    compare_df,
+                    x="Line",
+                    y="Value"
+                )
 
-            st.plotly_chart(
-                fig,
-                use_container_width=True
-            )
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True
+                )
 
-            st.success(
-                f"""
-Sales generated
-R{sales_amount:,.2f}
+            # =========================================
+            # TOP ANALYSIS
+            # =========================================
 
-Returns totalled
-R{returns_amount:,.2f}
+            elif intent["top"]:
 
-Net sales after returns:
-R{net_sales:,.2f}
-"""
-            )
+                group_col = "Line"
 
-        # ========================================
-        # STANDARD COMPARE
-        # ========================================
+                ql = question.lower()
 
-        elif len(compare_items) >= 2:
+                if "client" in ql:
+                    group_col = "Client Name"
 
-            results = []
+                elif "crop" in ql:
+                    group_col = "Crop Name"
 
-            for item in compare_items:
+                elif "variety" in ql:
+                    group_col = "Variety"
 
-                temp = df_temp[
-                    df_temp["Line"]
-                    .astype(str)
-                    .str.contains(
-                        item,
-                        case=False,
-                        na=False
+                elif "rep" in ql:
+                    group_col = "Rep"
+
+                metric_col = (
+                    "Quantity"
+                    if dataset_name == "Orders"
+                    else "Amount"
+                )
+
+                result = (
+                    df_temp
+                    .groupby(group_col)[metric_col]
+                    .sum()
+                    .sort_values(
+                        ascending=False
                     )
-                ]
-
-                qty_total = (
-                    temp["Quantity"]
-                    .sum()
+                    .head(10)
                 )
 
-                amount_total = (
-                    temp["Amount"]
-                    .sum()
+                st.subheader(
+                    f"Top {group_col}"
                 )
 
-                results.append({
+                st.dataframe(result)
 
-                    "Line": item,
-                    "Quantity": qty_total,
-                    "Amount": amount_total
-                })
+                fig = px.bar(
+                    x=result.index,
+                    y=result.values
+                )
 
-            results_df = pd.DataFrame(results)
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True
+                )
+
+            # =========================================
+            # TOTALS
+            # =========================================
+
+            else:
+
+                if dataset_name == "Orders":
+
+                    total_qty = (
+                        df_temp["Quantity"]
+                        .sum()
+                    )
+
+                    ai_text = f"""
+Question:
+{question}
+
+Results:
+Total Ordered Quantity:
+{total_qty:,.0f}
+
+Dataset:
+Orders
+"""
+
+                else:
+
+                    total_sales = (
+                        df_temp["Amount"]
+                        .sum()
+                    )
+
+                    total_qty = (
+                        df_temp["Quantity"]
+                        .sum()
+                    )
+
+                    ai_text = f"""
+Question:
+{question}
+
+Results:
+Total Value:
+R{total_sales:,.2f}
+
+Total Quantity:
+{total_qty:,.0f}
+
+Dataset:
+{dataset_name}
+"""
+
+                natural_response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": """
+You are a professional nursery business intelligence manager.
+
+Answer professionally.
+
+Be concise and analytical.
+
+Do not use greetings or sign-offs.
+"""
+                        },
+
+                        {
+                            "role": "user",
+                            "content": ai_text
+                        }
+                    ]
+                )
+
+                st.subheader(
+                    "Managerial Insight"
+                )
+
+                st.success(
+                    natural_response
+                    .choices[0]
+                    .message
+                    .content
+                )
+
+            # =========================================
+            # DATA TABLE
+            # =========================================
 
             st.subheader(
-                "📊 Comparison Results"
+                "Matching Data"
             )
 
-            st.dataframe(results_df)
-
-            metric_col = "Quantity"
-
-            if intent["metric"] == "amount":
-
-                metric_col = "Amount"
-
-            fig = px.bar(
-                results_df,
-                x="Line",
-                y=metric_col
-            )
-
-            st.plotly_chart(
-                fig,
+            st.dataframe(
+                df_temp,
                 use_container_width=True
             )
 
-            top_row = (
-                results_df
-                .sort_values(
-                    metric_col,
-                    ascending=False
-                )
-                .iloc[0]
+# =====================================================
+# DASHBOARDS
+# =====================================================
+
+with tab2:
+
+    dashboard_tab = st.selectbox(
+        "Select Dashboard",
+        [
+            "Orders",
+            "Sales",
+            "Returns"
+        ]
+    )
+
+    # =================================================
+    # ORDERS
+    # =================================================
+
+    if dashboard_tab == "Orders":
+
+        st.header(
+            "📦 Orders Dashboard"
+        )
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric(
+            "Order Records",
+            len(df_orders)
+        )
+
+        col2.metric(
+            "Total Quantity Ordered",
+            f"{df_orders['Quantity'].sum():,.0f}"
+        )
+
+        col3.metric(
+            "Clients",
+            df_orders[
+                "Client Name"
+            ].nunique()
+        )
+
+        st.subheader(
+            "Top Ordered Lines"
+        )
+
+        top_lines = (
+            df_orders
+            .groupby("Line")["Quantity"]
+            .sum()
+            .sort_values(
+                ascending=False
             )
+            .head(10)
+        )
 
-            st.success(
-                f"""
-Top performer was
-{top_row['Line']}
-with
-{top_row[metric_col]:,.0f}
-{metric_col.lower()}.
-"""
+        st.dataframe(top_lines)
+
+        fig1 = px.bar(
+            x=top_lines.index,
+            y=top_lines.values
+        )
+
+        st.plotly_chart(
+            fig1,
+            use_container_width=True
+        )
+
+        st.subheader(
+            "Top Ordered Crops"
+        )
+
+        top_crops = (
+            df_orders
+            .groupby("Crop Name")["Quantity"]
+            .sum()
+            .sort_values(
+                ascending=False
             )
+            .head(10)
+        )
 
-    # =====================================================
-    # TOP LOGIC
-    # =====================================================
+        st.dataframe(top_crops)
 
-    elif intent["top"]:
+        st.subheader(
+            "Top Ordering Clients"
+        )
 
-        group_col = "Line"
+        top_clients = (
+            df_orders
+            .groupby("Client Name")["Quantity"]
+            .sum()
+            .sort_values(
+                ascending=False
+            )
+            .head(10)
+        )
 
-        if "client" in question.lower():
+        st.dataframe(top_clients)
 
-            group_col = "Client Name"
+    # =================================================
+    # SALES
+    # =================================================
 
-        if "crop" in question.lower():
+    elif dashboard_tab == "Sales":
 
-            group_col = "Crop Name"
+        st.header(
+            "💰 Sales Dashboard"
+        )
 
-        if "variety" in question.lower():
+        col1, col2, col3 = st.columns(3)
 
-            group_col = "Variety"
+        col1.metric(
+            "Sales Records",
+            len(df_sales)
+        )
 
-        if "rep" in question.lower():
+        col2.metric(
+            "Sales Value",
+            f"R{df_sales['Amount'].sum():,.2f}"
+        )
 
-            group_col = "Rep"
+        col3.metric(
+            "Quantity Sold",
+            f"{df_sales['Quantity'].sum():,.0f}"
+        )
 
-        result = (
-
-            df_temp
-            .groupby(group_col)["Quantity"]
+        top_sales = (
+            df_sales
+            .groupby("Line")["Amount"]
             .sum()
             .sort_values(
                 ascending=False
@@ -932,264 +1157,70 @@ with
         )
 
         st.subheader(
-            f"🏆 Top {group_col}"
+            "Top Sales Lines"
         )
 
-        st.dataframe(result)
+        st.dataframe(top_sales)
 
-        fig = px.bar(
-            x=result.index,
-            y=result.values
+        fig2 = px.bar(
+            x=top_sales.index,
+            y=top_sales.values
         )
 
         st.plotly_chart(
-            fig,
+            fig2,
             use_container_width=True
         )
 
-    # =====================================================
-    # STANDARD TOTALS
-    # =====================================================
+    # =================================================
+    # RETURNS
+    # =================================================
 
-    else:
+    elif dashboard_tab == "Returns":
 
-        # ========================================
-        # ORDERS
-        # ========================================
-
-        if intent["source"] == "orders":
-
-            qty_total = (
-                df_temp["Quantity"]
-                .sum()
-            )
-
-            st.success(
-                f"""
-Total stock ordered:
-{qty_total:,.0f}
-units
-"""
-            )
-
-        # ========================================
-        # SALES / RETURNS
-        # ========================================
-
-        else:
-
-            sales_filtered = apply_filters(
-                df_sales,
-                intent
-            )
-
-            returns_filtered = apply_filters(
-                df_returns,
-                intent
-            )
-
-            sold_qty = (
-                sales_filtered["Quantity"]
-                .sum()
-            )
-
-            sold_amount = (
-                sales_filtered["Amount"]
-                .sum()
-            )
-
-            returned_qty = (
-                returns_filtered["Quantity"]
-                .sum()
-            )
-
-            returned_amount = (
-                returns_filtered["Amount"]
-                .sum()
-            )
-
-            net_sales = (
-                sold_amount
-                - returned_amount
-            )
-
-            st.success(
-                f"""
-Sold Quantity:
-{sold_qty:,.0f}
-
-Returned Quantity:
-{returned_qty:,.0f}
-
-Sales Revenue:
-R{sold_amount:,.2f}
-
-Returns Value:
-R{returned_amount:,.2f}
-
-Net Sales:
-R{net_sales:,.2f}
-"""
-            )
-
-    # =====================================================
-    # MATCHING DATA
-    # =====================================================
-
-    st.subheader(
-        "📋 Matching Data"
-    )
-
-    st.dataframe(
-        df_temp,
-        use_container_width=True
-    )
-
-# =====================================================
-# DASHBOARD
-# =====================================================
-
-st.header("📊 Dashboard")
-
-dashboard = st.selectbox(
-
-    "Choose Dashboard",
-
-    [
-        "Orders",
-        "Sales",
-        "Returns"
-    ]
-)
-
-# =====================================================
-# ORDERS DASHBOARD
-# =====================================================
-
-if dashboard == "Orders":
-
-    col1, col2 = st.columns(2)
-
-    col1.metric(
-        "Total Orders",
-        len(df_orders)
-    )
-
-    col2.metric(
-        "Total Ordered Qty",
-        f"{df_orders['Quantity'].sum():,.0f}"
-    )
-
-    st.subheader(
-        "📦 Orders By Line"
-    )
-
-    orders_lines = (
-
-        df_orders
-        .groupby("Line")["Quantity"]
-        .sum()
-        .sort_values(
-            ascending=False
+        st.header(
+            "🔄 Returns Dashboard"
         )
-    )
 
-    st.dataframe(orders_lines)
+        col1, col2, col3 = st.columns(3)
 
-    fig = px.bar(
-        x=orders_lines.index,
-        y=orders_lines.values
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
-
-# =====================================================
-# SALES DASHBOARD
-# =====================================================
-
-elif dashboard == "Sales":
-
-    col1, col2 = st.columns(2)
-
-    col1.metric(
-        "Sales Records",
-        len(df_sales)
-    )
-
-    col2.metric(
-        "Sales Revenue",
-        f"R{df_sales['Amount'].sum():,.2f}"
-    )
-
-    st.subheader(
-        "💰 Sales By Line"
-    )
-
-    sales_lines = (
-
-        df_sales
-        .groupby("Line")["Amount"]
-        .sum()
-        .sort_values(
-            ascending=False
+        col1.metric(
+            "Return Records",
+            len(df_returns)
         )
-    )
 
-    st.dataframe(sales_lines)
-
-    fig = px.bar(
-        x=sales_lines.index,
-        y=sales_lines.values
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
-
-# =====================================================
-# RETURNS DASHBOARD
-# =====================================================
-
-elif dashboard == "Returns":
-
-    col1, col2 = st.columns(2)
-
-    col1.metric(
-        "Returns Records",
-        len(df_returns)
-    )
-
-    col2.metric(
-        "Returns Value",
-        f"R{df_returns['Amount'].sum():,.2f}"
-    )
-
-    st.subheader(
-        "🔄 Returns By Line"
-    )
-
-    returns_lines = (
-
-        df_returns
-        .groupby("Line")["Amount"]
-        .sum()
-        .sort_values(
-            ascending=False
+        col2.metric(
+            "Return Value",
+            f"R{df_returns['Amount'].sum():,.2f}"
         )
-    )
 
-    st.dataframe(returns_lines)
+        col3.metric(
+            "Returned Quantity",
+            f"{df_returns['Quantity'].sum():,.0f}"
+        )
 
-    fig = px.bar(
-        x=returns_lines.index,
-        y=returns_lines.values
-    )
+        top_returns = (
+            df_returns
+            .groupby("Line")["Amount"]
+            .sum()
+            .sort_values(
+                ascending=False
+            )
+            .head(10)
+        )
 
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
+        st.subheader(
+            "Top Returned Lines"
+        )
+
+        st.dataframe(top_returns)
+
+        fig3 = px.bar(
+            x=top_returns.index,
+            y=top_returns.values
+        )
+
+        st.plotly_chart(
+            fig3,
+            use_container_width=True
+        )
