@@ -34,6 +34,64 @@ BUILTIN_ADMIN_PASSWORD_HASH = (
     "scrypt:32768:8:1$cer4Rc98UopaCXLm$4d12e32c06be3f94fab0e22a80237c5d552f4b85ec0167b4c7f422050af7228161b83c239f4eae0fdc3dcdc17068492cc04dbcbc1a87bd565df57d776993abba"
 )
 
+STANDARD_COLUMNS = [
+    "Date",
+    "Client Name",
+    "Crop Name",
+    "Variety",
+    "Line",
+    "Rep",
+    "Quantity",
+    "Amount"
+]
+
+
+def empty_standard_frame():
+
+    return pd.DataFrame({
+        "Date": pd.Series(dtype="datetime64[ns]"),
+        "Client Name": pd.Series(dtype="string"),
+        "Crop Name": pd.Series(dtype="string"),
+        "Variety": pd.Series(dtype="string"),
+        "Line": pd.Series(dtype="string"),
+        "Rep": pd.Series(dtype="string"),
+        "Quantity": pd.Series(dtype="float"),
+        "Amount": pd.Series(dtype="float")
+    })
+
+
+def ensure_standard_columns(df):
+
+    for col in STANDARD_COLUMNS:
+
+        if col not in df.columns:
+
+            if col == "Date":
+                df[col] = pd.NaT
+
+            elif col in ["Quantity", "Amount"]:
+                df[col] = 0
+
+            else:
+                df[col] = ""
+
+    df["Date"] = pd.to_datetime(
+        df["Date"],
+        errors="coerce"
+    )
+
+    df["Quantity"] = pd.to_numeric(
+        df["Quantity"],
+        errors="coerce"
+    ).fillna(0)
+
+    df["Amount"] = pd.to_numeric(
+        df["Amount"],
+        errors="coerce"
+    ).fillna(0)
+
+    return df
+
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
@@ -203,7 +261,7 @@ def load_excel_file(path):
     candidate = app_dir() / path
 
     if not candidate.is_file():
-        return pd.DataFrame()
+        return empty_standard_frame()
 
     try:
 
@@ -211,10 +269,10 @@ def load_excel_file(path):
 
     except Exception:
 
-        return pd.DataFrame()
+        return empty_standard_frame()
 
     if len(df) == 0:
-        return pd.DataFrame()
+        return empty_standard_frame()
 
     df.columns = (
         df.columns
@@ -457,7 +515,7 @@ def load_excel_file(path):
 
             df["Amount"] = 0
 
-    return df
+    return ensure_standard_columns(df)
 
 # =====================================================
 # LOAD DATA
