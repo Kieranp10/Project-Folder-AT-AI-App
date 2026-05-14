@@ -49,7 +49,7 @@ STANDARD_COLUMNS = [
     "Seeds Recommended"
 ]
 
-DATA_CACHE_VERSION = 6
+DATA_CACHE_VERSION = 7
 
 
 def empty_standard_frame():
@@ -828,6 +828,40 @@ def all_client_names():
     )
 
 
+def unique_order_values(column):
+
+    values = (
+        df_orders[column]
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
+
+    values = values[
+        values != ""
+    ].drop_duplicates()
+
+    return sorted(
+        values.tolist(),
+        key=lambda x: len(str(x)),
+        reverse=True
+    )
+
+
+def detect_order_value(question, column):
+
+    q_norm = normalise_lookup_text(question)
+
+    for value in unique_order_values(column):
+
+        value_norm = normalise_lookup_text(value)
+
+        if value_norm and value_norm in q_norm:
+            return value
+
+    return None
+
+
 def detect_client_name(question):
 
     q_norm = normalise_lookup_text(question)
@@ -986,6 +1020,20 @@ def detect_intent(question):
             intent["line"] = line
 
     # =================================================
+    # CROP + VARIETY
+    # =================================================
+
+    intent["crop"] = detect_order_value(
+        question,
+        "Crop Name"
+    )
+
+    intent["variety"] = detect_order_value(
+        question,
+        "Variety"
+    )
+
+    # =================================================
     # CLIENT
     # =================================================
 
@@ -1087,6 +1135,26 @@ def apply_filters(df, intent):
                 client_builders_norm
                 == target_builders_norm
             )
+        ]
+
+    if intent["crop"]:
+
+        d = d[
+            d["Crop Name"]
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            == str(intent["crop"]).strip().upper()
+        ]
+
+    if intent["variety"]:
+
+        d = d[
+            d["Variety"]
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            == str(intent["variety"]).strip().upper()
         ]
 
     if intent["line"]:
@@ -1284,13 +1352,22 @@ def show_seed_forecast(question, intent):
         )
     )
 
+    forecast["Recommended_With_10pct_Growth"] = (
+        forecast["Seeds_Recommended"]
+        * 1.10
+    ).round(0)
+
     totals = (
         forecast
         .groupby("Forecast Month")
         .agg(
             Seeds_Min=("Seeds_Min", "sum"),
             Seeds_Max=("Seeds_Max", "sum"),
-            Seeds_Recommended=("Seeds_Recommended", "sum")
+            Seeds_Recommended=("Seeds_Recommended", "sum"),
+            Recommended_With_10pct_Growth=(
+                "Recommended_With_10pct_Growth",
+                "sum"
+            )
         )
         .reset_index()
     )
@@ -1300,8 +1377,20 @@ def show_seed_forecast(question, intent):
     )
 
     st.caption(
-        "Forecast uses the same month from the previous year. Plant to Plate is shown as a 2-3 seed range, with the recommended value using the higher number."
+        "Forecast uses the same month from the previous year. Plant to Plate is shown as a 2-3 seed range, with the recommended value using the higher number. The growth column adds 10%."
     )
+
+    if intent["crop"]:
+
+        st.caption(
+            f"Crop: {intent['crop']}"
+        )
+
+    if intent["variety"]:
+
+        st.caption(
+            f"Variety: {intent['variety']}"
+        )
 
     st.dataframe(
         totals,
@@ -1315,7 +1404,7 @@ def show_seed_forecast(question, intent):
 
     top_seeds = (
         forecast
-        .groupby("Crop Name")["Seeds_Recommended"]
+        .groupby("Crop Name")["Recommended_With_10pct_Growth"]
         .sum()
         .sort_values(
             ascending=False
