@@ -71,23 +71,32 @@ def _load_master_file(path):
 
 @st.cache_data
 def load_orders():
-    return _load_master_file("master_orders.xlsx") or pd.DataFrame(
-        columns=["Date", "Line", "Quantity", "Amount", "Crop Name", "Variety", "Client Name"]
-    )
+    df = _load_master_file("master_orders.xlsx")
+    if df is None:
+        return pd.DataFrame(
+            columns=["Date", "Line", "Quantity", "Amount", "Crop Name", "Variety", "Client Name"]
+        )
+    return df
 
 
 @st.cache_data
 def load_sales():
-    return _load_master_file("master_sales.xlsx") or pd.DataFrame(
-        columns=["Date", "Line", "Quantity", "Amount", "Crop Name", "Variety", "Client Name"]
-    )
+    df = _load_master_file("master_sales.xlsx")
+    if df is None:
+        return pd.DataFrame(
+            columns=["Date", "Line", "Quantity", "Amount", "Crop Name", "Variety", "Client Name"]
+        )
+    return df
 
 
 @st.cache_data
 def load_returns():
-    return _load_master_file("master_returns.xlsx") or pd.DataFrame(
-        columns=["Date", "Line", "Quantity", "Amount", "Crop Name", "Variety", "Client Name"]
-    )
+    df = _load_master_file("master_returns.xlsx")
+    if df is None:
+        return pd.DataFrame(
+            columns=["Date", "Line", "Quantity", "Amount", "Crop Name", "Variety", "Client Name"]
+        )
+    return df
 
 
 df_orders = load_orders()
