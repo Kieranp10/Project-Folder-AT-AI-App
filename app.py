@@ -45,6 +45,8 @@ STANDARD_COLUMNS = [
     "Amount"
 ]
 
+DATA_CACHE_VERSION = 3
+
 
 def empty_standard_frame():
 
@@ -435,34 +437,26 @@ def load_excel_file(path):
 
         # Amount column in orders = quantity
 
-        if "Amount" in df.columns:
+        c_order_qty = first_column(
+            df,
+            [
+                "Amount",
+                "Quantity",
+                "Qty",
+                "Units"
+            ]
+        )
+
+        if c_order_qty:
 
             df["Quantity"] = pd.to_numeric(
-                df["Amount"],
+                df[c_order_qty],
                 errors="coerce"
             ).fillna(0)
 
         else:
 
-            c_qty = first_column(
-                df,
-                [
-                    "Quantity",
-                    "Qty",
-                    "Units"
-                ]
-            )
-
-            if c_qty:
-
-                df["Quantity"] = pd.to_numeric(
-                    df[c_qty],
-                    errors="coerce"
-                ).fillna(0)
-
-            else:
-
-                df["Quantity"] = 0
+            df["Quantity"] = 0
 
         # orders don't use rand sales values
         df["Amount"] = 0
@@ -522,7 +516,7 @@ def load_excel_file(path):
 # =====================================================
 
 @st.cache_data
-def load_orders():
+def load_orders(cache_version):
 
     return load_excel_file(
         "master_orders.xlsx"
@@ -530,7 +524,7 @@ def load_orders():
 
 
 @st.cache_data
-def load_sales():
+def load_sales(cache_version):
 
     return load_excel_file(
         "master_sales.xlsx"
@@ -538,7 +532,7 @@ def load_sales():
 
 
 @st.cache_data
-def load_returns():
+def load_returns(cache_version):
 
     return load_excel_file(
         "master_returns.xlsx"
@@ -546,16 +540,71 @@ def load_returns():
 
 
 df_orders = ensure_standard_columns(
-    load_orders()
+    load_orders(DATA_CACHE_VERSION)
 )
 
 df_sales = ensure_standard_columns(
-    load_sales()
+    load_sales(DATA_CACHE_VERSION)
 )
 
 df_returns = ensure_standard_columns(
-    load_returns()
+    load_returns(DATA_CACHE_VERSION)
 )
+
+# =====================================================
+# TEXT MATCHING HELPERS
+# =====================================================
+
+def normalise_lookup_text(value):
+
+    return re.sub(
+        r"[^a-z0-9]+",
+        " ",
+        str(value).lower()
+    ).strip()
+
+
+def all_client_names():
+
+    clients = pd.concat(
+        [
+            df_orders["Client Name"],
+            df_sales["Client Name"],
+            df_returns["Client Name"]
+        ],
+        ignore_index=True
+    )
+
+    clients = (
+        clients
+        .dropna()
+        .astype(str)
+        .str.strip()
+    )
+
+    clients = clients[
+        clients != ""
+    ].drop_duplicates()
+
+    return sorted(
+        clients.tolist(),
+        key=lambda x: len(str(x)),
+        reverse=True
+    )
+
+
+def detect_client_name(question):
+
+    q_norm = normalise_lookup_text(question)
+
+    for client in all_client_names():
+
+        client_norm = normalise_lookup_text(client)
+
+        if client_norm and client_norm in q_norm:
+            return client
+
+    return None
 
 # =====================================================
 # INTENT DETECTION
@@ -620,6 +669,17 @@ def detect_intent(question):
     if any(
         x in ql
         for x in [
+            "orders",
+            "ordered",
+            "order"
+        ]
+    ):
+
+        intent["source"] = "orders"
+
+    if any(
+        x in ql
+        for x in [
             "sales",
             "sold",
             "revenue"
@@ -664,6 +724,14 @@ def detect_intent(question):
         if line.lower() in ql:
 
             intent["line"] = line
+
+    # =================================================
+    # CLIENT
+    # =================================================
+
+    intent["client"] = detect_client_name(
+        question
+    )
 
     # =================================================
     # YEAR
@@ -722,10 +790,22 @@ def detect_intent(question):
 
 def apply_filters(df, intent):
 
-    d = df.copy()
+    d = ensure_standard_columns(
+        df.copy()
+    )
 
     if len(d) == 0:
         return d
+
+    if intent["client"]:
+
+        d = d[
+            d["Client Name"]
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            == str(intent["client"]).strip().lower()
+        ]
 
     if intent["line"]:
 
@@ -817,6 +897,12 @@ if question:
     st.caption(
         f"Using Dataset: {source_name}"
     )
+
+    if intent["client"]:
+
+        st.caption(
+            f"Client: {intent['client']}"
+        )
 
     # =================================================
     # FILTERED DATA
@@ -1068,41 +1154,38 @@ Total stock ordered:
         # SALES / RETURNS
         # =============================================
 
-        else:
-
-            sales_filtered = apply_filters(
-                df_sales,
-                intent
-            )
-
-            returns_filtered = apply_filters(
-                df_returns,
-                intent
-            )
-
-            sold_qty = (
-                sales_filtered["Quantity"]
-                .sum()
-            )
-
-            sold_amount = (
-                sales_filtered["Amount"]
-                .sum()
-            )
+        elif intent["source"] == "returns":
 
             returned_qty = (
-                returns_filtered["Quantity"]
+                df_temp["Quantity"]
                 .sum()
             )
 
             returned_amount = (
-                returns_filtered["Amount"]
+                df_temp["Amount"]
                 .sum()
             )
 
-            net_sales = (
-                sold_amount
-                - returned_amount
+            st.success(
+                f"""
+Returned Quantity:
+{returned_qty:,.0f}
+
+Returns Value:
+R{returned_amount:,.2f}
+"""
+            )
+
+        else:
+
+            sold_qty = (
+                df_temp["Quantity"]
+                .sum()
+            )
+
+            sold_amount = (
+                df_temp["Amount"]
+                .sum()
             )
 
             st.success(
@@ -1110,17 +1193,8 @@ Total stock ordered:
 Sold Quantity:
 {sold_qty:,.0f}
 
-Returned Quantity:
-{returned_qty:,.0f}
-
 Sales Revenue:
 R{sold_amount:,.2f}
-
-Returns Value:
-R{returned_amount:,.2f}
-
-Net Sales:
-R{net_sales:,.2f}
 """
             )
 
