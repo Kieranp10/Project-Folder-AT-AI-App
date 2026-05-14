@@ -545,9 +545,17 @@ def load_returns():
     )
 
 
-df_orders = load_orders()
-df_sales = load_sales()
-df_returns = load_returns()
+df_orders = ensure_standard_columns(
+    load_orders()
+)
+
+df_sales = ensure_standard_columns(
+    load_sales()
+)
+
+df_returns = ensure_standard_columns(
+    load_returns()
+)
 
 # =====================================================
 # INTENT DETECTION
@@ -1152,27 +1160,31 @@ dashboard = st.selectbox(
 
 if dashboard == "Orders":
 
+    df_orders_dashboard = ensure_standard_columns(
+        df_orders.copy()
+    )
+
     col1, col2 = st.columns(2)
 
     col1.metric(
         "Total Orders",
-        len(df_orders)
+        len(df_orders_dashboard)
     )
 
     col2.metric(
         "Total Ordered Qty",
-        f"{df_orders['Quantity'].sum():,.0f}"
+        f"{df_orders_dashboard['Quantity'].sum():,.0f}"
     )
 
     st.subheader(
         "📦 Orders By Line"
     )
 
-    if len(df_orders) > 0:
+    if len(df_orders_dashboard) > 0:
 
         orders_lines = (
 
-            df_orders
+            df_orders_dashboard
             .groupby("Line")["Quantity"]
             .sum()
             .sort_values(
