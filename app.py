@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 from openai import OpenAI
+from werkzeug.security import check_password_hash
 import os
 import re
 
@@ -9,12 +10,68 @@ import re
 # CONFIG
 # =====================================================
 
+BUILTIN_ADMIN_USERNAME = "admin"
+BUILTIN_ADMIN_PASSWORD_HASH = (
+    "scrypt:32768:8:1$cer4Rc98UopaCXLm$4d12e32c06be3f94fab0e22a80237c5d552f4b85ec0167b4c7f422050af7228161b83c239f4eae0fdc3dcdc17068492cc04dbcbc1a87bd565df57d776993abba"
+)
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 st.set_page_config(
     page_title="Nursery Intelligence Copilot v2.1",
     layout="wide"
 )
+
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+
+def user_password_hashes():
+    try:
+        u = st.secrets.get("users")
+        if u is None:
+            return {}
+        if hasattr(u, "to_dict"):
+            u = u.to_dict()
+        elif not isinstance(u, dict):
+            u = dict(u)
+        return {str(k): str(v) for k, v in u.items()}
+    except Exception:
+        return {}
+
+
+def verify_login(username: str, password: str) -> bool:
+    uname = (username or "").strip()
+    if not uname:
+        return False
+    users = user_password_hashes()
+    h = users.get(uname)
+    if h and check_password_hash(h, password):
+        return True
+    if uname.lower() == BUILTIN_ADMIN_USERNAME.lower() and check_password_hash(
+        BUILTIN_ADMIN_PASSWORD_HASH, password
+    ):
+        return True
+    return False
+
+
+if not st.session_state.authenticated:
+    st.title("Nursery Intelligence Copilot")
+    if not user_password_hashes():
+        st.info(
+            "Sign in with **admin** / **1234**. Add more users in `.streamlit/secrets.toml` under `[users]` when ready."
+        )
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign in")
+        if submitted:
+            if verify_login(username.strip(), password):
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Invalid username or password.")
+    st.stop()
 
 # =====================================================
 # DATA LOAD
@@ -102,6 +159,10 @@ def load_returns():
 df_orders = load_orders()
 df_sales = load_sales()
 df_returns = load_returns()
+
+orders_file = os.path.isfile("master_orders.xlsx")
+sales_file = os.path.isfile("master_sales.xlsx")
+returns_file = os.path.isfile("master_returns.xlsx")
 
 # =====================================================
 # KNOWN LINES (UNCHANGED)
@@ -254,6 +315,14 @@ def apply_filters(df, intent):
 # =====================================================
 
 st.title("🌱 Nursery Intelligence Copilot v2.1")
+
+with st.sidebar:
+    st.subheader("Data files")
+    st.write("master_orders.xlsx", "✅" if orders_file else "❌")
+    st.write("master_sales.xlsx", "✅" if sales_file else "❌")
+    st.write("master_returns.xlsx", "✅" if returns_file else "❌")
+    if not orders_file or not sales_file or not returns_file:
+        st.warning("Missing one or more expected master files. Check file names and upload to the app folder.")
 
 question = st.text_input("Ask anything about sales or orders")
 
