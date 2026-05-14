@@ -1263,28 +1263,56 @@ if question:
 
     elif intent["top"]:
 
+        ql = question.lower()
         group_col = "Line"
+        group_label = "Line"
+        action_label = "ordered"
 
-        if "client" in question.lower():
+        if intent["source"] == "sales":
+
+            action_label = "sold"
+
+        elif intent["source"] == "returns":
+
+            action_label = "returned"
+
+        metric_col = "Quantity"
+
+        if (
+            intent["metric"] == "amount"
+            and intent["source"] != "orders"
+        ):
+
+            metric_col = "Amount"
+
+        if (
+            "client" in ql
+            or "customer" in ql
+            or "store" in ql
+        ):
 
             group_col = "Client Name"
+            group_label = "Client"
 
-        if "crop" in question.lower():
+        if "crop" in ql:
 
             group_col = "Crop Name"
+            group_label = "Crop"
 
-        if "variety" in question.lower():
+        if "variety" in ql:
 
             group_col = "Variety"
+            group_label = "Variety"
 
-        if "rep" in question.lower():
+        if "rep" in ql:
 
             group_col = "Rep"
+            group_label = "Rep"
 
         result = (
 
             df_temp
-            .groupby(group_col)["Quantity"]
+            .groupby(group_col)[metric_col]
             .sum()
             .sort_values(
                 ascending=False
@@ -1293,10 +1321,72 @@ if question:
         )
 
         st.subheader(
-            f"🏆 Top {group_col}"
+            f"Top {group_label} {action_label.title()}"
         )
 
         st.dataframe(result)
+
+        if len(result) > 0:
+
+            top_name = result.index[0]
+            top_value = result.iloc[0]
+
+            if metric_col == "Amount":
+
+                st.success(
+                    f"{top_name} {action_label} the most: R{top_value:,.2f}"
+                )
+
+            else:
+
+                st.success(
+                    f"{top_name} {action_label} the most: {top_value:,.0f} units"
+                )
+
+            if (
+                group_col == "Client Name"
+                and (
+                    "of what" in ql
+                    or "what" in ql
+                    or "which line" in ql
+                    or "which lines" in ql
+                    or "products" in ql
+                    or "items" in ql
+                )
+            ):
+
+                client_rows = df_temp[
+                    df_temp["Client Name"]
+                    .astype(str)
+                    .str.strip()
+                    == str(top_name).strip()
+                ]
+
+                item_breakdown = (
+                    client_rows
+                    .groupby("Line")[metric_col]
+                    .sum()
+                    .sort_values(
+                        ascending=False
+                    )
+                    .head(10)
+                )
+
+                st.subheader(
+                    f"What {top_name} {action_label}"
+                )
+
+                st.dataframe(item_breakdown)
+
+                item_fig = px.bar(
+                    x=item_breakdown.index,
+                    y=item_breakdown.values
+                )
+
+                st.plotly_chart(
+                    item_fig,
+                    use_container_width=True
+                )
 
         fig = px.bar(
             x=result.index,
