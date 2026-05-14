@@ -45,7 +45,7 @@ STANDARD_COLUMNS = [
     "Amount"
 ]
 
-DATA_CACHE_VERSION = 3
+DATA_CACHE_VERSION = 4
 
 
 def empty_standard_frame():
@@ -93,6 +93,38 @@ def ensure_standard_columns(df):
     ).fillna(0)
 
     return df
+
+
+def parse_excel_dates(series):
+
+    numeric_dates = pd.to_numeric(
+        series,
+        errors="coerce"
+    )
+
+    parsed = pd.to_datetime(
+        series,
+        errors="coerce"
+    )
+
+    excel_serial_mask = (
+        numeric_dates.notna()
+        & numeric_dates.between(
+            20000,
+            60000
+        )
+    )
+
+    if excel_serial_mask.any():
+
+        parsed.loc[excel_serial_mask] = pd.to_datetime(
+            numeric_dates.loc[excel_serial_mask],
+            unit="D",
+            origin="1899-12-30",
+            errors="coerce"
+        )
+
+    return parsed
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -288,9 +320,8 @@ def load_excel_file(path):
 
     if "Date" in df.columns:
 
-        df["Date"] = pd.to_datetime(
-            df["Date"],
-            errors="coerce"
+        df["Date"] = parse_excel_dates(
+            df["Date"]
         )
 
     else:
@@ -467,6 +498,16 @@ def load_excel_file(path):
 
     else:
 
+        df = df[
+            df["Date"].notna()
+            & (
+                df["Client Name"]
+                .astype(str)
+                .str.strip()
+                != ""
+            )
+        ].copy()
+
         c_qty = first_column(
             df,
             [
@@ -508,6 +549,18 @@ def load_excel_file(path):
         else:
 
             df["Amount"] = 0
+
+        if "returns" in filename_lower:
+
+            df["Quantity"] = (
+                df["Quantity"]
+                .abs()
+            )
+
+            df["Amount"] = (
+                df["Amount"]
+                .abs()
+            )
 
     return ensure_standard_columns(df)
 
@@ -682,6 +735,8 @@ def detect_intent(question):
         for x in [
             "sales",
             "sold",
+            "sell",
+            "selling",
             "revenue"
         ]
     ):
@@ -950,68 +1005,141 @@ if question:
                 intent
             )
 
-            sales_amount = (
-                sales_filtered["Amount"]
-                .sum()
-            )
+            if (
+                "lines" in ql
+                or (
+                    "line" in ql
+                    and not intent["line"]
+                )
+            ):
 
-            returns_amount = (
-                returns_filtered["Amount"]
-                .sum()
-            )
+                sales_by_line = (
+                    sales_filtered
+                    .groupby("Line")
+                    .agg(
+                        Sales_Quantity=("Quantity", "sum"),
+                        Sales_Amount=("Amount", "sum")
+                    )
+                )
 
-            sales_qty = (
-                sales_filtered["Quantity"]
-                .sum()
-            )
+                returns_by_line = (
+                    returns_filtered
+                    .groupby("Line")
+                    .agg(
+                        Returns_Quantity=("Quantity", "sum"),
+                        Returns_Amount=("Amount", "sum")
+                    )
+                )
 
-            returns_qty = (
-                returns_filtered["Quantity"]
-                .sum()
-            )
+                compare_df = (
+                    sales_by_line
+                    .join(
+                        returns_by_line,
+                        how="outer"
+                    )
+                    .fillna(0)
+                    .reset_index()
+                )
 
-            net_sales = (
-                sales_amount
-                - returns_amount
-            )
+                compare_df["Net_Sales"] = (
+                    compare_df["Sales_Amount"]
+                    - compare_df["Returns_Amount"]
+                )
 
-            compare_df = pd.DataFrame({
+                compare_df = compare_df.sort_values(
+                    "Net_Sales",
+                    ascending=False
+                )
 
-                "Metric": [
+                st.subheader(
+                    "Sales vs Returns By Line"
+                )
 
-                    "Sales Amount",
-                    "Returns Amount",
-                    "Net Sales",
-                    "Sales Quantity",
-                    "Returns Quantity"
-                ],
+                st.dataframe(
+                    compare_df,
+                    use_container_width=True
+                )
 
-                "Value": [
+                fig = px.bar(
+                    compare_df,
+                    x="Line",
+                    y=[
+                        "Sales_Amount",
+                        "Returns_Amount",
+                        "Net_Sales"
+                    ],
+                    barmode="group"
+                )
 
-                    sales_amount,
-                    returns_amount,
-                    net_sales,
-                    sales_qty,
-                    returns_qty
-                ]
-            })
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True
+                )
 
-            st.subheader(
-                "📊 Sales vs Returns"
-            )
+            else:
 
-            st.dataframe(compare_df)
+                sales_amount = (
+                    sales_filtered["Amount"]
+                    .sum()
+                )
 
-            fig = px.bar(
-                compare_df,
-                x="Metric",
-                y="Value"
-            )
+                returns_amount = (
+                    returns_filtered["Amount"]
+                    .sum()
+                )
 
-            st.plotly_chart(
-                fig,
-                use_container_width=True
-            )
+                sales_qty = (
+                    sales_filtered["Quantity"]
+                    .sum()
+                )
+
+                returns_qty = (
+                    returns_filtered["Quantity"]
+                    .sum()
+                )
+
+                net_sales = (
+                    sales_amount
+                    - returns_amount
+                )
+
+                compare_df = pd.DataFrame({
+
+                    "Metric": [
+
+                        "Sales Amount",
+                        "Returns Amount",
+                        "Net Sales",
+                        "Sales Quantity",
+                        "Returns Quantity"
+                    ],
+
+                    "Value": [
+
+                        sales_amount,
+                        returns_amount,
+                        net_sales,
+                        sales_qty,
+                        returns_qty
+                    ]
+                })
+
+                st.subheader(
+                    "Sales vs Returns"
+                )
+
+                st.dataframe(compare_df)
+
+                fig = px.bar(
+                    compare_df,
+                    x="Metric",
+                    y="Value"
+                )
+
+                st.plotly_chart(
+                    fig,
+                    use_container_width=True
+                )
 
         # =============================================
         # LINE COMPARISON
@@ -1178,6 +1306,11 @@ R{returned_amount:,.2f}
 
         else:
 
+            returns_filtered = apply_filters(
+                df_returns,
+                intent
+            )
+
             sold_qty = (
                 df_temp["Quantity"]
                 .sum()
@@ -1188,6 +1321,16 @@ R{returned_amount:,.2f}
                 .sum()
             )
 
+            returned_amount = (
+                returns_filtered["Amount"]
+                .sum()
+            )
+
+            net_sales = (
+                sold_amount
+                - returned_amount
+            )
+
             st.success(
                 f"""
 Sold Quantity:
@@ -1195,6 +1338,12 @@ Sold Quantity:
 
 Sales Revenue:
 R{sold_amount:,.2f}
+
+Returns Value:
+R{returned_amount:,.2f}
+
+Net Sales:
+R{net_sales:,.2f}
 """
             )
 
