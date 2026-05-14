@@ -20,17 +20,79 @@ st.set_page_config(
 # DATA LOAD
 # =====================================================
 
-@st.cache_data
-def load_data():
-    df = pd.read_excel("master_orders.xlsx")
-    df.columns = df.columns.str.strip()
+def _first_column(df, candidates):
+    cols = {str(c).strip().lower(): c for c in df.columns}
+    for cand in candidates:
+        key = cand.strip().lower()
+        if key in cols:
+            return cols[key]
+    for c in df.columns:
+        cl = str(c).strip().lower()
+        for cand in candidates:
+            if cand.strip().lower() in cl:
+                return c
+    return None
 
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-    df["Amount"] = pd.to_numeric(df["Amount"], errors="coerce")
+
+def _load_master_file(path):
+    if not os.path.isfile(path):
+        return None
+    try:
+        df = pd.read_excel(path)
+    except Exception:
+        return None
+    df.columns = df.columns.astype(str).str.strip()
+
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    else:
+        df["Date"] = pd.NaT
+
+    c_line = _first_column(df, ["Lines", "Line", "Product/service", "Item", "Description", "Class", "Item description"])
+    if c_line:
+        df["Line"] = df[c_line].astype(str).str.strip()
+    else:
+        df["Line"] = ""
+
+    c_qty = _first_column(df, ["Quantity", "Qty", "Units", "QTY", "Amount"])
+    if c_qty:
+        df["Quantity"] = pd.to_numeric(df[c_qty], errors="coerce").fillna(0.0)
+    else:
+        df["Quantity"] = 0.0
+
+    c_amt = _first_column(df, ["Amount", "Rand", "Sales", "Total", "Line amount", "Net amount"])
+    if c_amt:
+        df["Amount"] = pd.to_numeric(df[c_amt], errors="coerce").fillna(0.0)
+    else:
+        df["Amount"] = 0.0
 
     return df
 
-df = load_data()
+
+@st.cache_data
+def load_orders():
+    return _load_master_file("master_orders.xlsx") or pd.DataFrame(
+        columns=["Date", "Line", "Quantity", "Amount", "Crop Name", "Variety", "Client Name"]
+    )
+
+
+@st.cache_data
+def load_sales():
+    return _load_master_file("master_sales.xlsx") or pd.DataFrame(
+        columns=["Date", "Line", "Quantity", "Amount", "Crop Name", "Variety", "Client Name"]
+    )
+
+
+@st.cache_data
+def load_returns():
+    return _load_master_file("master_returns.xlsx") or pd.DataFrame(
+        columns=["Date", "Line", "Quantity", "Amount", "Crop Name", "Variety", "Client Name"]
+    )
+
+
+df_orders = load_orders()
+df_sales = load_sales()
+df_returns = load_returns()
 
 # =====================================================
 # KNOWN LINES (UNCHANGED)
@@ -64,7 +126,9 @@ def detect_intent(q):
         "variety": None,
         "client": None,
         "year": None,
-        "month": None
+        "month": None,
+        "source": "orders",
+        "metric": "quantity",
     }
 
     # =====================
@@ -74,11 +138,27 @@ def detect_intent(q):
     if any(x in ql for x in ["compare", "vs", "versus"]):
         intent["compare"] = True
 
-    if any(x in ql for x in ["how many", "total", "sold", "amount"]):
+    if any(x in ql for x in ["how many", "total", "sold", "amount", "returns", "returned", "net sales", "revenue"]):
         intent["total"] = True
 
     if any(x in ql for x in ["top", "best", "highest"]):
         intent["top"] = True
+
+    # =====================
+    # SOURCE ROUTING
+    # =====================
+
+    if any(x in ql for x in ["return", "returns", "returned", "refund"]):
+        intent["source"] = "returns"
+    elif any(x in ql for x in ["sold", "sales", "sale", "revenue", "net sales"]):
+        intent["source"] = "sales"
+    elif any(x in ql for x in ["order", "ordered", "ordering"]):
+        intent["source"] = "orders"
+
+    if any(x in ql for x in ["amount", "rand", "value", "sales", "revenue", "total", "net sales"]):
+        intent["metric"] = "amount"
+    if any(x in ql for x in ["how many", "quantity", "qty", "units", "pieces", "number of"]):
+        intent["metric"] = "quantity"
 
     # =====================
     # LINE DETECTION
@@ -101,7 +181,7 @@ def detect_intent(q):
         intent["crop"] = "PETUNIA"
 
     # =====================
-    # YEAR DETECTION (FULL RESTORE)
+    # YEAR DETECTION
     # =====================
 
     current_year = pd.Timestamp.today().year
@@ -117,13 +197,13 @@ def detect_intent(q):
         intent["year"] = int(year_match[0])
 
     # =====================
-    # MONTH DETECTION (FULL RESTORE)
+    # MONTH DETECTION
     # =====================
 
     months = {
-        "january":1,"february":2,"march":3,"april":4,"may":5,"june":6,
-        "july":7,"august":8,"september":9,"october":10,
-        "november":11,"december":12
+        "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+        "july": 7, "august": 8, "september": 9, "october": 10,
+        "november": 11, "december": 12
     }
 
     for m, v in months.items():
@@ -140,22 +220,22 @@ def apply_filters(df, intent):
 
     d = df.copy()
 
-    if intent["line"]:
+    if intent["line"] and "Line" in d.columns:
         d = d[d["Line"].astype(str).str.contains(intent["line"], case=False, na=False)]
 
-    if intent["crop"]:
+    if intent["crop"] and "Crop Name" in d.columns:
         d = d[d["Crop Name"].astype(str).str.contains(intent["crop"], case=False, na=False)]
 
-    if intent["variety"]:
+    if intent["variety"] and "Variety" in d.columns:
         d = d[d["Variety"].astype(str).str.contains(intent["variety"], case=False, na=False)]
 
-    if intent["client"]:
+    if intent["client"] and "Client Name" in d.columns:
         d = d[d["Client Name"].astype(str).str.contains(intent["client"], case=False, na=False)]
 
-    if intent["year"]:
+    if intent["year"] and "Date" in d.columns:
         d = d[d["Date"].dt.year == intent["year"]]
 
-    if intent["month"]:
+    if intent["month"] and "Date" in d.columns:
         d = d[d["Date"].dt.month == intent["month"]]
 
     return d
@@ -166,19 +246,30 @@ def apply_filters(df, intent):
 
 st.title("🌱 Nursery Intelligence Copilot v2.1")
 
-question = st.text_input("Ask anything about sales")
+question = st.text_input("Ask anything about sales or orders")
 
 if question:
 
     intent = detect_intent(question)
-    df_temp = apply_filters(df, intent)
+    df_active = df_orders
+    source_label = "Orders"
+    if intent["source"] == "sales":
+        df_active = df_sales
+        source_label = "Sales"
+    elif intent["source"] == "returns":
+        df_active = df_returns
+        source_label = "Returns"
+
+    st.caption(f"Active dataset: **{source_label}**")
+
+    df_temp = apply_filters(df_active, intent)
 
     # =====================================================
     # SAFETY FALLBACK (PREVENT FALSE "NO DATA")
     # =====================================================
 
     if len(df_temp) == 0:
-        df_temp = df.copy()
+        df_temp = df_active.copy()
 
     ql = question.lower()
 
@@ -225,6 +316,9 @@ if question:
         elif "line" in ql:
             group_col = "Line"
 
+        if group_col not in df_temp.columns:
+            group_col = "Line"
+
         result = df_temp.groupby(group_col)["Amount"].sum().sort_values(ascending=False).head(10)
 
         st.subheader(f"Top {group_col}")
@@ -238,9 +332,34 @@ if question:
     # =====================================================
 
     else:
+        if intent["source"] == "orders":
+            ordered_qty = df_temp["Quantity"].sum()
+            ordered_amt = df_temp["Amount"].sum()
+            if intent["metric"] == "amount":
+                st.success(f"Ordered Amount: R{ordered_amt:,.2f}")
+            else:
+                st.success(f"Ordered Quantity: {ordered_qty:,.0f}")
+        else:
+            sold_qty = df_temp["Quantity"].sum() if intent["source"] == "sales" else 0.0
+            sold_amt = df_temp["Amount"].sum() if intent["source"] == "sales" else 0.0
+            returns_temp = apply_filters(df_returns, intent)
+            returned_qty = returns_temp["Quantity"].sum()
+            returned_amt = returns_temp["Amount"].sum()
+            net_sales = sold_amt - returned_amt
 
-        total = df_temp["Amount"].sum()
-        st.success(f"Total Sold: {total:,}")
+            if intent["source"] == "returns":
+                st.success(
+                    f"Returned Quantity: {returned_qty:,.0f} | Returned Amount: R{returned_amt:,.2f}"
+                )
+            else:
+                if intent["metric"] == "amount":
+                    st.success(
+                        f"Sales Amount: R{sold_amt:,.2f} | Returns Amount: R{returned_amt:,.2f} | Net Sales: R{net_sales:,.2f}"
+                    )
+                else:
+                    st.success(
+                        f"Sold Quantity: {sold_qty:,.0f} | Returned Quantity: {returned_qty:,.0f} | Net Sales: R{net_sales:,.2f}"
+                    )
 
     # =====================================================
     # DATA VIEW (UNCHANGED)
@@ -257,15 +376,15 @@ st.header("📊 Dashboard")
 
 col1, col2, col3 = st.columns(3)
 
-col1.metric("Orders", len(df))
-col2.metric("Total Amount", f"{df['Amount'].sum():,}")
-col3.metric("Clients", df["Client Name"].nunique())
+col1.metric("Orders", len(df_orders))
+col2.metric("Order Amount", f"{df_orders['Amount'].sum():,}")
+col3.metric("Order Clients", df_orders["Client Name"].nunique() if "Client Name" in df_orders.columns else 0)
 
 st.subheader("Top Clients")
-st.dataframe(df.groupby("Client Name")["Amount"].sum().sort_values(ascending=False).head(10))
+st.dataframe(df_orders.groupby("Client Name")["Amount"].sum().sort_values(ascending=False).head(10))
 
 st.subheader("Top Crops")
-st.dataframe(df.groupby("Crop Name")["Amount"].sum().sort_values(ascending=False).head(10))
+st.dataframe(df_orders.groupby("Crop Name")["Amount"].sum().sort_values(ascending=False).head(10))
 
 st.subheader("Top Lines")
-st.dataframe(df.groupby("Line")["Amount"].sum().sort_values(ascending=False).head(10))
+st.dataframe(df_orders.groupby("Line")["Amount"].sum().sort_values(ascending=False).head(10))
