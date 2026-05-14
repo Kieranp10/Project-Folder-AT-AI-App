@@ -78,16 +78,22 @@ if not st.session_state.authenticated:
 # =====================================================
 
 def _first_column(df, candidates):
+    """Find column in df that matches any of the candidates (flexible matching)"""
     cols = {str(c).strip().lower(): c for c in df.columns}
+    
+    # Exact match first
     for cand in candidates:
         key = cand.strip().lower()
         if key in cols:
             return cols[key]
+    
+    # Substring match
     for c in df.columns:
         cl = str(c).strip().lower()
         for cand in candidates:
             if cand.strip().lower() in cl:
                 return c
+    
     return None
 
 
@@ -118,7 +124,7 @@ def _load_master_file(path):
     else:
         df["Line"] = ""
 
-    c_qty = _first_column(df, ["Quantity", "Qty", "Units", "QTY", "Amount"])
+    c_qty = _first_column(df, ["Quantity", "Qty", "Units", "QTY"])
     if c_qty:
         df["Quantity"] = pd.to_numeric(df[c_qty], errors="coerce").fillna(0.0)
     else:
@@ -130,6 +136,30 @@ def _load_master_file(path):
     else:
         df["Amount"] = 0.0
 
+    c_client = _first_column(df, ["Client name", "Client Name", "Store", "Customer", "Buyer"])
+    if c_client:
+        df["Client Name"] = df[c_client].astype(str).str.strip()
+    else:
+        df["Client Name"] = ""
+
+    c_crop = _first_column(df, ["Crop name", "Crop Name", "Crop", "Product Type"])
+    if c_crop:
+        df["Crop Name"] = df[c_crop].astype(str).str.strip().str.upper()
+    else:
+        df["Crop Name"] = ""
+
+    c_variety = _first_column(df, ["Variety", "Colour", "Color", "Type", "Shade"])
+    if c_variety:
+        df["Variety"] = df[c_variety].astype(str).str.strip()
+    else:
+        df["Variety"] = ""
+
+    c_rep = _first_column(df, ["User", "Rep", "Representative", "Sales Rep", "Salesperson"])
+    if c_rep:
+        df["Rep"] = df[c_rep].astype(str).str.strip()
+    else:
+        df["Rep"] = ""
+
     return df
 
 
@@ -138,7 +168,7 @@ def load_orders():
     df = _load_master_file("master_orders.xlsx")
     if df is None:
         return pd.DataFrame(
-            columns=["Date", "Line", "Quantity", "Amount", "Crop Name", "Variety", "Client Name"]
+            columns=["Date", "Line", "Quantity", "Amount", "Crop Name", "Variety", "Client Name", "Rep"]
         )
     return df
 
@@ -148,7 +178,7 @@ def load_sales():
     df = _load_master_file("master_sales.xlsx")
     if df is None:
         return pd.DataFrame(
-            columns=["Date", "Line", "Quantity", "Amount", "Crop Name", "Variety", "Client Name"]
+            columns=["Date", "Line", "Quantity", "Amount", "Crop Name", "Variety", "Client Name", "Rep"]
         )
     return df
 
@@ -158,7 +188,7 @@ def load_returns():
     df = _load_master_file("master_returns.xlsx")
     if df is None:
         return pd.DataFrame(
-            columns=["Date", "Line", "Quantity", "Amount", "Crop Name", "Variety", "Client Name"]
+            columns=["Date", "Line", "Quantity", "Amount", "Crop Name", "Variety", "Client Name", "Rep"]
         )
     return df
 
@@ -201,19 +231,27 @@ def detect_intent(q):
         "crop": None,
         "variety": None,
         "client": None,
+        "rep": None,
         "year": None,
         "month": None,
         "source": "orders",
         "metric": "quantity",
+        "detailed": False,
     }
 
     # ACTION DETECTION
-    if any(x in ql for x in ["compare", "vs", "versus"]):
+    if any(x in ql for x in ["compare", "vs", "versus", "ordered vs", "sold vs", "ordered and sold", "ordered and returned"]):
         intent["compare"] = True
-    if any(x in ql for x in ["how many", "total", "sold", "amount", "returns", "returned", "net sales", "revenue"]):
+    
+    if any(x in ql for x in ["how many", "total", "sold", "amount", "returns", "returned", "net sales", "revenue", "ordered", "tell me"]):
         intent["total"] = True
-    if any(x in ql for x in ["top", "best", "highest"]):
+    
+    if any(x in ql for x in ["top", "best", "highest", "most", "leading"]):
         intent["top"] = True
+
+    # DETAILED MANAGERIAL QUERY
+    if any(x in ql for x in ["what", "how much", "tell me", "give me", "show me", "report", "analysis", "breakdown"]):
+        intent["detailed"] = True
 
     # SOURCE ROUTING
     if any(x in ql for x in ["return", "returns", "returned", "refund"]):
@@ -223,10 +261,14 @@ def detect_intent(q):
     elif any(x in ql for x in ["order", "ordered", "ordering"]):
         intent["source"] = "orders"
 
+    # If asking about "ordered vs sold" or comparison, mark as compare
+    if "ordered" in ql and ("sold" in ql or "sold" in ql):
+        intent["compare"] = True
+
     # METRIC DETECTION
-    if any(x in ql for x in ["amount", "rand", "value", "sales", "revenue", "total", "net sales"]):
+    if any(x in ql for x in ["amount", "rand", "value", "sales", "revenue", "total", "net sales", "worth"]):
         intent["metric"] = "amount"
-    if any(x in ql for x in ["how many", "quantity", "qty", "units", "pieces", "number of"]):
+    if any(x in ql for x in ["how many", "quantity", "qty", "units", "pieces", "number of", "count"]):
         intent["metric"] = "quantity"
 
     # LINE DETECTION
@@ -235,9 +277,32 @@ def detect_intent(q):
             intent["line"] = line
             break
 
-    # CROP DETECTION
-    if "petunia" in ql:
-        intent["crop"] = "PETUNIA"
+    # CROP DETECTION (more flexible)
+    crops = ["petunia", "calibrachoa", "argyranthemum", "dahlia", "ranunculus", "angelonia", "succulent", "chilli", "primrose", "geranium"]
+    for crop in crops:
+        if crop in ql:
+            intent["crop"] = crop.upper()
+            break
+
+    # VARIETY/COLOUR DETECTION (look for common colours/varieties)
+    varieties = ["pink", "red", "white", "purple", "yellow", "orange", "blue", "hybrid", "colour", "color", "shade", "variegated"]
+    for var in varieties:
+        if var in ql:
+            intent["variety"] = var
+            break
+
+    # REP DETECTION (look for "rep named X" or "user X ordered" or similar)
+    rep_patterns = [
+        r"rep\s+(?:named\s+)?(\w+)",
+        r"user\s+(\w+)",
+        r"rep\s+(\w+)",
+        r"(?:sales\s+)?rep\s+(\w+)",
+    ]
+    for pattern in rep_patterns:
+        match = re.search(pattern, ql)
+        if match:
+            intent["rep"] = match.group(1).title()
+            break
 
     # DATE DETECTION
     current_year = pd.Timestamp.today().year
@@ -280,6 +345,9 @@ def apply_filters(df, intent):
 
     if intent["client"] and "Client Name" in d.columns:
         d = d[d["Client Name"].astype(str).str.contains(intent["client"], case=False, na=False)]
+
+    if intent["rep"] and "Rep" in d.columns:
+        d = d[d["Rep"].astype(str).str.contains(intent["rep"], case=False, na=False)]
 
     if intent["year"] and "Date" in d.columns:
         d = d[d["Date"].dt.year == intent["year"]]
