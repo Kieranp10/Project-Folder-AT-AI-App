@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 from openai import OpenAI
 from werkzeug.security import check_password_hash
+from pathlib import Path
 import os
 import re
 
@@ -91,8 +92,15 @@ def _first_column(df, candidates):
     return None
 
 
+def _app_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
 def _load_master_file(path):
-    if not os.path.isfile(path):
+    candidate = _app_dir() / path
+    if not candidate.is_file():
+        candidate = Path(path)
+    if not candidate.is_file():
         return None
     try:
         df = pd.read_excel(path)
@@ -160,9 +168,9 @@ df_orders = load_orders()
 df_sales = load_sales()
 df_returns = load_returns()
 
-orders_file = os.path.isfile("master_orders.xlsx")
-sales_file = os.path.isfile("master_sales.xlsx")
-returns_file = os.path.isfile("master_returns.xlsx")
+orders_file = (_app_dir() / "master_orders.xlsx").is_file()
+sales_file = (_app_dir() / "master_sales.xlsx").is_file()
+returns_file = (_app_dir() / "master_returns.xlsx").is_file()
 
 # =====================================================
 # KNOWN LINES (UNCHANGED)
@@ -321,6 +329,9 @@ with st.sidebar:
     st.write("master_orders.xlsx", "✅" if orders_file else "❌")
     st.write("master_sales.xlsx", "✅" if sales_file else "❌")
     st.write("master_returns.xlsx", "✅" if returns_file else "❌")
+    st.write("Orders rows", len(df_orders) if df_orders is not None else 0)
+    st.write("Sales rows", len(df_sales) if df_sales is not None else 0)
+    st.write("Returns rows", len(df_returns) if df_returns is not None else 0)
     if not orders_file or not sales_file or not returns_file:
         st.warning("Missing one or more expected master files. Check file names and upload to the app folder.")
 
