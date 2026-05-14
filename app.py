@@ -45,7 +45,7 @@ STANDARD_COLUMNS = [
     "Amount"
 ]
 
-DATA_CACHE_VERSION = 4
+DATA_CACHE_VERSION = 5
 
 
 def empty_standard_frame():
@@ -617,6 +617,29 @@ def normalise_lookup_text(value):
     ).strip()
 
 
+def builders_lookup_text(value):
+
+    text = normalise_lookup_text(value)
+
+    text = re.sub(
+        r"\bbuilders\s+warehouse\b",
+        "builders",
+        text
+    )
+
+    text = re.sub(
+        r"\bnew\b",
+        "",
+        text
+    )
+
+    return re.sub(
+        r"\s+",
+        " ",
+        text
+    ).strip()
+
+
 def all_client_names():
 
     clients = pd.concat(
@@ -649,12 +672,21 @@ def all_client_names():
 def detect_client_name(question):
 
     q_norm = normalise_lookup_text(question)
+    q_builders_norm = builders_lookup_text(question)
 
     for client in all_client_names():
 
         client_norm = normalise_lookup_text(client)
+        client_builders_norm = builders_lookup_text(client)
 
         if client_norm and client_norm in q_norm:
+            return client
+
+        if (
+            client_builders_norm
+            and client_builders_norm in q_builders_norm
+        ):
+
             return client
 
     return None
@@ -854,12 +886,34 @@ def apply_filters(df, intent):
 
     if intent["client"]:
 
-        d = d[
+        client_text = (
             d["Client Name"]
             .astype(str)
             .str.strip()
-            .str.lower()
-            == str(intent["client"]).strip().lower()
+        )
+
+        client_norm = client_text.map(
+            normalise_lookup_text
+        )
+
+        client_builders_norm = client_text.map(
+            builders_lookup_text
+        )
+
+        target_norm = normalise_lookup_text(
+            intent["client"]
+        )
+
+        target_builders_norm = builders_lookup_text(
+            intent["client"]
+        )
+
+        d = d[
+            (client_norm == target_norm)
+            | (
+                client_builders_norm
+                == target_builders_norm
+            )
         ]
 
     if intent["line"]:
