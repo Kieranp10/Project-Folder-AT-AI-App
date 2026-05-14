@@ -4,6 +4,7 @@ import plotly.express as px
 from openai import OpenAI
 from werkzeug.security import check_password_hash
 from pathlib import Path
+import json
 import os
 import re
 
@@ -49,7 +50,7 @@ STANDARD_COLUMNS = [
     "Seeds Recommended"
 ]
 
-DATA_CACHE_VERSION = 7
+DATA_CACHE_VERSION = 8
 
 
 def empty_standard_frame():
@@ -828,6 +829,81 @@ def all_client_names():
     )
 
 
+def learning_memory_path():
+
+    return app_dir() / "learning_memory.json"
+
+
+def load_learning_memory():
+
+    path = learning_memory_path()
+
+    if not path.is_file():
+
+        return {
+            "aliases": {},
+            "feedback": []
+        }
+
+    try:
+
+        with open(
+            path,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            memory = json.load(f)
+
+    except Exception:
+
+        memory = {}
+
+    if "aliases" not in memory:
+
+        memory["aliases"] = {}
+
+    if "feedback" not in memory:
+
+        memory["feedback"] = []
+
+    return memory
+
+
+def save_learning_memory(memory):
+
+    try:
+
+        with open(
+            learning_memory_path(),
+            "w",
+            encoding="utf-8"
+        ) as f:
+
+            json.dump(
+                memory,
+                f,
+                indent=2
+            )
+
+        return True
+
+    except Exception:
+
+        return False
+
+
+def learned_aliases(column):
+
+    memory = load_learning_memory()
+
+    return (
+        memory
+        .get("aliases", {})
+        .get(column, {})
+    )
+
+
 def unique_order_values(column):
 
     values = (
@@ -852,6 +928,17 @@ def detect_order_value(question, column):
 
     q_norm = normalise_lookup_text(question)
 
+    for alias, value in learned_aliases(
+        column
+    ).items():
+
+        alias_norm = normalise_lookup_text(
+            alias
+        )
+
+        if alias_norm and alias_norm in q_norm:
+            return value
+
     for value in unique_order_values(column):
 
         value_norm = normalise_lookup_text(value)
@@ -866,6 +953,17 @@ def detect_client_name(question):
 
     q_norm = normalise_lookup_text(question)
     q_builders_norm = builders_lookup_text(question)
+
+    for alias, client in learned_aliases(
+        "Client Name"
+    ).items():
+
+        alias_norm = normalise_lookup_text(
+            alias
+        )
+
+        if alias_norm and alias_norm in q_norm:
+            return client
 
     for client in all_client_names():
 
@@ -1311,8 +1409,33 @@ def show_seed_forecast(question, intent):
 
     if not seed_frames:
 
+        period_text = ", ".join(
+            [
+                f"{pd.Timestamp(year=year - 1, month=month, day=1).strftime('%B %Y')}"
+                for year, month in target_months
+            ]
+        )
+
+        item_text = "that crop or variety"
+
+        if intent["crop"] and intent["variety"]:
+
+            item_text = (
+                f"{intent['crop']} {intent['variety']}"
+            )
+
+        elif intent["crop"]:
+
+            item_text = intent["crop"]
+
+        elif intent["variety"]:
+
+            item_text = (
+                f"variety {intent['variety']}"
+            )
+
         st.warning(
-            "No matching historical seed-order data found for the selected month(s)."
+            f"We did not find any historical orders for {item_text} in {period_text}, so there is no previous-year seed demand to base this forecast on."
         )
 
         return
@@ -1422,6 +1545,153 @@ def show_seed_forecast(question, intent):
         use_container_width=True
     )
 
+
+def save_alias(memory, column, alias, value):
+
+    alias = str(alias).strip()
+    value = str(value).strip()
+
+    if not alias or not value:
+
+        return
+
+    if column not in memory["aliases"]:
+
+        memory["aliases"][column] = {}
+
+    memory["aliases"][column][alias] = value
+
+
+def render_learning_feedback(question, intent):
+
+    with st.expander(
+        "Help the app learn from this question"
+    ):
+
+        with st.form(
+            "learning_feedback_form"
+        ):
+
+            useful = st.radio(
+                "Was this answer correct or useful?",
+                [
+                    "Yes",
+                    "No",
+                    "Partly"
+                ],
+                horizontal=True
+            )
+
+            notes = st.text_area(
+                "Correction notes"
+            )
+
+            st.caption(
+                "Use aliases when the app misunderstands wording. Example: alias 'mixed' can mean variety 'MIX'."
+            )
+
+            crop_alias = st.text_input(
+                "Crop alias phrase"
+            )
+
+            crop_options = [
+                ""
+            ] + unique_order_values(
+                "Crop Name"
+            )
+
+            crop_value = st.selectbox(
+                "Correct crop name",
+                crop_options,
+                index=0
+            )
+
+            variety_alias = st.text_input(
+                "Variety alias phrase"
+            )
+
+            variety_options = [
+                ""
+            ] + unique_order_values(
+                "Variety"
+            )
+
+            variety_value = st.selectbox(
+                "Correct variety",
+                variety_options,
+                index=0
+            )
+
+            client_alias = st.text_input(
+                "Client alias phrase"
+            )
+
+            client_options = [
+                ""
+            ] + all_client_names()
+
+            client_value = st.selectbox(
+                "Correct client name",
+                client_options,
+                index=0
+            )
+
+            submitted = st.form_submit_button(
+                "Save feedback"
+            )
+
+            if submitted:
+
+                memory = load_learning_memory()
+
+                memory["feedback"].append({
+                    "question": question,
+                    "useful": useful,
+                    "notes": notes,
+                    "detected": {
+                        "source": intent["source"],
+                        "line": intent["line"],
+                        "crop": intent["crop"],
+                        "variety": intent["variety"],
+                        "client": intent["client"],
+                        "year": intent["year"],
+                        "month": intent["month"]
+                    }
+                })
+
+                save_alias(
+                    memory,
+                    "Crop Name",
+                    crop_alias,
+                    crop_value
+                )
+
+                save_alias(
+                    memory,
+                    "Variety",
+                    variety_alias,
+                    variety_value
+                )
+
+                save_alias(
+                    memory,
+                    "Client Name",
+                    client_alias,
+                    client_value
+                )
+
+                if save_learning_memory(memory):
+
+                    st.success(
+                        "Saved. The app will use these corrections on future questions."
+                    )
+
+                else:
+
+                    st.warning(
+                        "I could not save the learning file. On Streamlit Cloud this can happen if the app folder is read-only."
+                    )
+
 # =====================================================
 # TITLE
 # =====================================================
@@ -1489,6 +1759,18 @@ if question:
 
         st.caption(
             f"Client: {intent['client']}"
+        )
+
+    if intent["crop"]:
+
+        st.caption(
+            f"Crop: {intent['crop']}"
+        )
+
+    if intent["variety"]:
+
+        st.caption(
+            f"Variety: {intent['variety']}"
         )
 
     # =================================================
@@ -1987,6 +2269,11 @@ R{net_sales:,.2f}
     st.dataframe(
         df_temp,
         use_container_width=True
+    )
+
+    render_learning_feedback(
+        question,
+        intent
     )
 
 # =====================================================
