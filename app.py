@@ -42,10 +42,14 @@ STANDARD_COLUMNS = [
     "Line",
     "Rep",
     "Quantity",
-    "Amount"
+    "Amount",
+    "Cavity",
+    "Seeds Min",
+    "Seeds Max",
+    "Seeds Recommended"
 ]
 
-DATA_CACHE_VERSION = 5
+DATA_CACHE_VERSION = 6
 
 
 def empty_standard_frame():
@@ -58,7 +62,11 @@ def empty_standard_frame():
         "Line": pd.Series(dtype="string"),
         "Rep": pd.Series(dtype="string"),
         "Quantity": pd.Series(dtype="float"),
-        "Amount": pd.Series(dtype="float")
+        "Amount": pd.Series(dtype="float"),
+        "Cavity": pd.Series(dtype="float"),
+        "Seeds Min": pd.Series(dtype="float"),
+        "Seeds Max": pd.Series(dtype="float"),
+        "Seeds Recommended": pd.Series(dtype="float")
     })
 
 
@@ -71,7 +79,14 @@ def ensure_standard_columns(df):
             if col == "Date":
                 df[col] = pd.NaT
 
-            elif col in ["Quantity", "Amount"]:
+            elif col in [
+                "Quantity",
+                "Amount",
+                "Cavity",
+                "Seeds Min",
+                "Seeds Max",
+                "Seeds Recommended"
+            ]:
                 df[col] = 0
 
             else:
@@ -89,6 +104,26 @@ def ensure_standard_columns(df):
 
     df["Amount"] = pd.to_numeric(
         df["Amount"],
+        errors="coerce"
+    ).fillna(0)
+
+    df["Cavity"] = pd.to_numeric(
+        df["Cavity"],
+        errors="coerce"
+    ).fillna(0)
+
+    df["Seeds Min"] = pd.to_numeric(
+        df["Seeds Min"],
+        errors="coerce"
+    ).fillna(0)
+
+    df["Seeds Max"] = pd.to_numeric(
+        df["Seeds Max"],
+        errors="coerce"
+    ).fillna(0)
+
+    df["Seeds Recommended"] = pd.to_numeric(
+        df["Seeds Recommended"],
         errors="coerce"
     ).fillna(0)
 
@@ -125,6 +160,103 @@ def parse_excel_dates(series):
         )
 
     return parsed
+
+
+def add_order_seed_columns(df):
+
+    d = df.copy()
+
+    cavity = pd.to_numeric(
+        d["Cavity"],
+        errors="coerce"
+    ).fillna(0)
+
+    line = (
+        d["Line"]
+        .astype(str)
+        .str.upper()
+    )
+
+    seed_min = pd.Series(
+        0,
+        index=d.index,
+        dtype="float"
+    )
+
+    seed_max = pd.Series(
+        0,
+        index=d.index,
+        dtype="float"
+    )
+
+    six_pack = (
+        cavity.eq(6)
+        & line.str.contains(
+            "SEEDLINGS",
+            na=False
+        )
+    )
+
+    four_pack = (
+        cavity.eq(4)
+        & line.str.contains(
+            "SEEDLINGS",
+            na=False
+        )
+    )
+
+    twelve_cm = (
+        cavity.eq(12)
+        | line.str.contains(
+            "12CM",
+            na=False
+        )
+    )
+
+    fifteen_cm = (
+        cavity.eq(15)
+        | line.str.contains(
+            "15CM COLOUR",
+            na=False
+        )
+    )
+
+    plant_to_plate = (
+        cavity.eq(17)
+        | line.str.contains(
+            "PLANT TO PLATE",
+            na=False
+        )
+    )
+
+    seed_min.loc[six_pack] = 6
+    seed_max.loc[six_pack] = 6
+
+    seed_min.loc[four_pack] = 4
+    seed_max.loc[four_pack] = 4
+
+    seed_min.loc[twelve_cm] = 1
+    seed_max.loc[twelve_cm] = 1
+
+    seed_min.loc[fifteen_cm] = 2
+    seed_max.loc[fifteen_cm] = 2
+
+    seed_min.loc[plant_to_plate] = 2
+    seed_max.loc[plant_to_plate] = 3
+
+    d["Seeds Min"] = (
+        d["Quantity"]
+        * seed_min
+    )
+
+    d["Seeds Max"] = (
+        d["Quantity"]
+        * seed_max
+    )
+
+    d["Seeds Recommended"] = d["Seeds Max"]
+
+    return d
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -455,6 +587,29 @@ def load_excel_file(path):
         df["Rep"] = ""
 
     # =================================================
+    # CAVITY
+    # =================================================
+
+    c_cavity = first_column(
+        df,
+        [
+            "Cavity",
+            "Cavities"
+        ]
+    )
+
+    if c_cavity:
+
+        df["Cavity"] = pd.to_numeric(
+            df[c_cavity],
+            errors="coerce"
+        ).fillna(0)
+
+    else:
+
+        df["Cavity"] = 0
+
+    # =================================================
     # QUANTITY + AMOUNT HANDLING
     # =================================================
 
@@ -491,6 +646,10 @@ def load_excel_file(path):
 
         # orders don't use rand sales values
         df["Amount"] = 0
+
+        df = add_order_seed_columns(
+            df
+        )
 
     # ================================================
     # SALES + RETURNS
@@ -703,6 +862,7 @@ def detect_intent(question):
 
         "compare": False,
         "top": False,
+        "seed": False,
         "metric": "quantity",
         "source": "orders",
 
@@ -750,6 +910,19 @@ def detect_intent(question):
     # =================================================
     # SOURCE
     # =================================================
+
+    if any(
+        x in ql
+        for x in [
+            "seed",
+            "seeds",
+            "seed order",
+            "seed ordering"
+        ]
+    ):
+
+        intent["seed"] = True
+        intent["source"] = "orders"
 
     if any(
         x in ql
@@ -944,6 +1117,222 @@ def apply_filters(df, intent):
 
     return d
 
+
+def forecast_seed_months(question):
+
+    ql = question.lower()
+
+    months = {
+
+        "january": 1,
+        "february": 2,
+        "march": 3,
+        "april": 4,
+        "may": 5,
+        "june": 6,
+        "july": 7,
+        "august": 8,
+        "september": 9,
+        "october": 10,
+        "november": 11,
+        "december": 12
+    }
+
+    today = pd.Timestamp.today()
+    found = []
+
+    for month_name, month_num in months.items():
+
+        if month_name in ql:
+
+            forecast_year = today.year
+
+            if month_num < today.month:
+
+                forecast_year = today.year + 1
+
+            found.append(
+                (
+                    forecast_year,
+                    month_num
+                )
+            )
+
+    if found:
+
+        return found
+
+    horizon = 1
+
+    if (
+        "upcoming months" in ql
+        or "next few months" in ql
+        or "next 3 months" in ql
+    ):
+
+        horizon = 3
+
+    targets = []
+
+    for offset in range(
+        1,
+        horizon + 1
+    ):
+
+        target = today + pd.DateOffset(
+            months=offset
+        )
+
+        targets.append(
+            (
+                target.year,
+                target.month
+            )
+        )
+
+    return targets
+
+
+def show_seed_forecast(question, intent):
+
+    target_months = forecast_seed_months(
+        question
+    )
+
+    orders = apply_filters(
+        df_orders,
+        {
+            **intent,
+            "year": None,
+            "month": None
+        }
+    )
+
+    seed_frames = []
+
+    for forecast_year, forecast_month in target_months:
+
+        history_year = forecast_year - 1
+
+        temp = orders[
+            (orders["Date"].dt.year == history_year)
+            & (orders["Date"].dt.month == forecast_month)
+        ].copy()
+
+        temp = temp[
+            temp["Seeds Recommended"] > 0
+        ].copy()
+
+        if len(temp) == 0:
+
+            continue
+
+        temp["Forecast Month"] = pd.Timestamp(
+            year=forecast_year,
+            month=forecast_month,
+            day=1
+        ).strftime("%B %Y")
+
+        temp["History Month"] = pd.Timestamp(
+            year=history_year,
+            month=forecast_month,
+            day=1
+        ).strftime("%B %Y")
+
+        seed_frames.append(temp)
+
+    if not seed_frames:
+
+        st.warning(
+            "No matching historical seed-order data found for the selected month(s)."
+        )
+
+        return
+
+    seed_data = pd.concat(
+        seed_frames,
+        ignore_index=True
+    )
+
+    forecast = (
+        seed_data
+        .groupby(
+            [
+                "Forecast Month",
+                "History Month",
+                "Crop Name",
+                "Variety",
+                "Line"
+            ]
+        )
+        .agg(
+            Ordered_Units=("Quantity", "sum"),
+            Seeds_Min=("Seeds Min", "sum"),
+            Seeds_Max=("Seeds Max", "sum"),
+            Seeds_Recommended=("Seeds Recommended", "sum")
+        )
+        .reset_index()
+        .sort_values(
+            [
+                "Forecast Month",
+                "Seeds_Recommended"
+            ],
+            ascending=[
+                True,
+                False
+            ]
+        )
+    )
+
+    totals = (
+        forecast
+        .groupby("Forecast Month")
+        .agg(
+            Seeds_Min=("Seeds_Min", "sum"),
+            Seeds_Max=("Seeds_Max", "sum"),
+            Seeds_Recommended=("Seeds_Recommended", "sum")
+        )
+        .reset_index()
+    )
+
+    st.subheader(
+        "Seed Order Forecast"
+    )
+
+    st.caption(
+        "Forecast uses the same month from the previous year. Plant to Plate is shown as a 2-3 seed range, with the recommended value using the higher number."
+    )
+
+    st.dataframe(
+        totals,
+        use_container_width=True
+    )
+
+    st.dataframe(
+        forecast,
+        use_container_width=True
+    )
+
+    top_seeds = (
+        forecast
+        .groupby("Crop Name")["Seeds_Recommended"]
+        .sum()
+        .sort_values(
+            ascending=False
+        )
+        .head(20)
+    )
+
+    fig = px.bar(
+        x=top_seeds.index,
+        y=top_seeds.values
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True
+    )
+
 # =====================================================
 # TITLE
 # =====================================================
@@ -1026,7 +1415,14 @@ if question:
     # COMPARE LOGIC
     # =================================================
 
-    if intent["compare"]:
+    if intent["seed"]:
+
+        show_seed_forecast(
+            question,
+            intent
+        )
+
+    elif intent["compare"]:
 
         ql = question.lower()
 
@@ -1531,7 +1927,7 @@ if dashboard == "Orders":
         df_orders.copy()
     )
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
     col1.metric(
         "Total Orders",
@@ -1541,6 +1937,11 @@ if dashboard == "Orders":
     col2.metric(
         "Total Ordered Qty",
         f"{df_orders_dashboard['Quantity'].sum():,.0f}"
+    )
+
+    col3.metric(
+        "Recommended Seeds",
+        f"{df_orders_dashboard['Seeds Recommended'].sum():,.0f}"
     )
 
     st.subheader(
