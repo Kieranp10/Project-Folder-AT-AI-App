@@ -1362,7 +1362,7 @@ def apply_filters(df, intent):
 
         target_line = str(intent["line"])
 
-        d = d[
+        line_mask = (
             d["Line"]
             .astype(str)
             .map(
@@ -1377,6 +1377,12 @@ def apply_filters(df, intent):
                     )
                 )
             )
+            .fillna(False)
+            .astype(bool)
+        )
+
+        d = d[
+            line_mask
         ]
 
     if intent["year"]:
@@ -1883,6 +1889,12 @@ if question:
 
         st.caption(
             f"Variety: {intent['variety']}"
+        )
+
+    if intent["line"]:
+
+        st.caption(
+            f"Line: {intent['line']}"
         )
 
     # =================================================
