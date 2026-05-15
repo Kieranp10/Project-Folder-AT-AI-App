@@ -1356,6 +1356,8 @@ def apply_filters(df, intent):
     if len(d) == 0:
         return d
 
+    base_d = d.copy()
+
     has_crop_values = (
         d["Crop Name"]
         .astype(str)
@@ -1529,6 +1531,28 @@ def apply_filters(df, intent):
             d["Date"].dt.month
             == intent["month"]
         ]
+
+    if (
+        len(d) == 0
+        and intent["line"]
+        and (
+            intent["crop"]
+            or intent["variety"]
+            or intent.get("crop_family")
+        )
+    ):
+
+        fallback_intent = {
+            **intent,
+            "crop": None,
+            "crop_family": None,
+            "variety": None
+        }
+
+        return apply_filters(
+            base_d,
+            fallback_intent
+        )
 
     return d
 
