@@ -382,6 +382,12 @@ KNOWN_LINES = [
     "17CM GERANIUM"
 ]
 
+PETUNIA_SEEDABLE_LINES = [
+    "SEEDLINGS",
+    "12CM COLOUR POT",
+    "15CM COLOUR POTS"
+]
+
 # =====================================================
 # APP DIRECTORY
 # =====================================================
@@ -840,6 +846,19 @@ def line_text_matches(line, question):
     )
 
 
+def crop_family_from_question(question):
+
+    q_norm = normalise_lookup_text(question)
+
+    if re.search(
+        r"\bpetunias\b",
+        q_norm
+    ):
+        return "PETUNIA"
+
+    return None
+
+
 def builders_lookup_text(value):
 
     text = normalise_lookup_text(value)
@@ -1082,6 +1101,29 @@ def detect_client_name(question):
 
             return client
 
+        client_tokens = set(
+            client_norm.split()
+        )
+
+        question_tokens = set(
+            q_norm.split()
+        )
+
+        meaningful_tokens = [
+            token
+            for token in client_tokens
+            if len(token) > 2
+        ]
+
+        if (
+            len(meaningful_tokens) >= 2
+            and all(
+                token in question_tokens
+                for token in meaningful_tokens
+            )
+        ):
+            return client
+
     return None
 
 # =====================================================
@@ -1102,6 +1144,7 @@ def detect_intent(question):
 
         "line": None,
         "crop": None,
+        "crop_family": None,
         "variety": None,
         "client": None,
         "rep": None,
@@ -1220,6 +1263,10 @@ def detect_intent(question):
         question
     )
 
+    intent["crop_family"] = crop_family_from_question(
+        question
+    )
+
     # =================================================
     # CROP + VARIETY
     # =================================================
@@ -1228,6 +1275,9 @@ def detect_intent(question):
         question,
         "Crop Name"
     )
+
+    if intent["crop_family"]:
+        intent["crop"] = None
 
     intent["variety"] = detect_order_value(
         question,
@@ -1371,6 +1421,45 @@ def apply_filters(df, intent):
                 == target_builders_norm
             )
         ]
+
+    if (
+        intent.get("crop_family")
+        and has_crop_values
+    ):
+
+        crop_family = str(
+            intent["crop_family"]
+        ).strip().upper()
+
+        d = d[
+            d["Crop Name"]
+            .astype(str)
+            .str.upper()
+            .str.contains(
+                crop_family,
+                na=False
+            )
+        ]
+
+        if crop_family == "PETUNIA":
+
+            allowed_lines = PETUNIA_SEEDABLE_LINES
+
+            d = d[
+                d["Line"]
+                .astype(str)
+                .map(
+                    lambda value: any(
+                        line_text_matches(
+                            allowed_line,
+                            value
+                        )
+                        for allowed_line in allowed_lines
+                    )
+                )
+                .fillna(False)
+                .astype(bool)
+            ]
 
     if (
         intent["crop"]
@@ -1667,6 +1756,12 @@ def show_seed_forecast(question, intent):
 
         st.caption(
             f"Crop: {intent['crop']}"
+        )
+
+    if intent["crop_family"]:
+
+        st.caption(
+            f"Crop Family: {intent['crop_family']}"
         )
 
     if intent["variety"]:
