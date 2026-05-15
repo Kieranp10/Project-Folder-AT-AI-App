@@ -1322,6 +1322,24 @@ def apply_filters(df, intent):
         .any()
     )
 
+    crop_overlaps_line = (
+        intent["line"]
+        and intent["crop"]
+        and line_text_matches(
+            intent["crop"],
+            intent["line"]
+        )
+    )
+
+    variety_overlaps_line = (
+        intent["line"]
+        and intent["variety"]
+        and line_text_matches(
+            intent["variety"],
+            intent["line"]
+        )
+    )
+
     if intent["client"]:
 
         client_text = (
@@ -1357,6 +1375,7 @@ def apply_filters(df, intent):
     if (
         intent["crop"]
         and has_crop_values
+        and not crop_overlaps_line
     ):
 
         d = d[
@@ -1370,6 +1389,7 @@ def apply_filters(df, intent):
     if (
         intent["variety"]
         and has_variety_values
+        and not variety_overlaps_line
     ):
 
         d = d[
