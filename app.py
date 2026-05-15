@@ -846,6 +846,108 @@ def line_text_matches(line, question):
     )
 
 
+def line_exact_matches(left, right):
+
+    return (
+        normalise_singular_lookup_text(left)
+        == normalise_singular_lookup_text(right)
+    )
+
+
+def line_phrase_in_question(line, question):
+
+    line_norm = normalise_lookup_text(line)
+    question_norm = normalise_lookup_text(question)
+
+    if (
+        line_norm
+        and re.search(
+            rf"\b{re.escape(line_norm)}\b",
+            question_norm
+        )
+    ):
+        return True
+
+    line_singular = normalise_singular_lookup_text(line)
+    question_singular = normalise_singular_lookup_text(question)
+
+    return bool(
+        line_singular
+        and re.search(
+            rf"\b{re.escape(line_singular)}\b",
+            question_singular
+        )
+    )
+
+
+def line_group_tokens(value):
+
+    return [
+        token
+        for token in normalise_singular_lookup_text(value).split()
+        if not re.fullmatch(
+            r"\d+|\d+cm|cm",
+            token
+        )
+    ]
+
+
+def line_dimension_tokens(value):
+
+    return [
+        token
+        for token in normalise_singular_lookup_text(value).split()
+        if re.fullmatch(
+            r"\d+|\d+cm",
+            token
+        )
+    ]
+
+
+def line_group_matches(group_value, line_value):
+
+    group_tokens = line_group_tokens(
+        group_value
+    )
+
+    line_words = set(
+        normalise_singular_lookup_text(
+            line_value
+        ).split()
+    )
+
+    group_dimensions = line_dimension_tokens(
+        group_value
+    )
+
+    return bool(
+        len(group_tokens) >= 2
+        and all(
+            dimension in line_words
+            for dimension in group_dimensions
+        )
+        and all(
+            token in line_words
+            for token in group_tokens
+        )
+    )
+
+
+def combined_line_question(question):
+
+    q_norm = normalise_lookup_text(
+        question
+    )
+
+    return bool(
+        re.search(
+            r"\b(all|both|together|combined|combine|added|add|total)\b",
+            q_norm
+        )
+        or " and " in f" {q_norm} "
+    )
+
+
 def crop_family_from_question(question):
 
     q_norm = normalise_lookup_text(question)
@@ -1045,6 +1147,14 @@ def apply_learned_question_intent(question, intent):
         if key in updated:
             updated[key] = value
 
+    if (
+        updated.get("line")
+        and not updated.get("lines")
+    ):
+        updated["lines"] = [
+            updated["line"]
+        ]
+
     updated["learned"] = True
 
     return updated
@@ -1105,6 +1215,24 @@ def detect_order_value(question, column):
 
 def detect_line(question):
 
+    lines = detect_lines(
+        question
+    )
+
+    if lines:
+        return lines[0]
+
+    return None
+
+
+def detect_lines(question):
+
+    combine_lines = combined_line_question(
+        question
+    )
+
+    line_values = []
+
     for alias, value in learned_aliases(
         "Line"
     ).items():
@@ -1113,25 +1241,83 @@ def detect_line(question):
             alias,
             question
         ):
-            return value
+            line_values.append(
+                value
+            )
 
-    for line in KNOWN_LINES:
+    candidates = []
 
-        if line_text_matches(
+    for line in (
+        KNOWN_LINES
+        + unique_order_values("Line")
+    ):
+
+        if line not in candidates:
+            candidates.append(line)
+
+    for line in candidates:
+
+        if line_phrase_in_question(
             line,
             question
         ):
-            return line
+            line_values.append(line)
 
-    for line in unique_order_values("Line"):
+    line_values = [
+        line
+        for index, line in enumerate(line_values)
+        if line and line not in line_values[:index]
+    ]
 
-        if line_text_matches(
-            line,
-            question
+    if not line_values:
+        return []
+
+    if combine_lines:
+
+        grouped_lines = []
+
+        for selected_line in line_values:
+
+            for candidate_line in candidates:
+
+                if (
+                    line_group_matches(
+                        selected_line,
+                        candidate_line
+                    )
+                    and candidate_line not in grouped_lines
+                ):
+                    grouped_lines.append(
+                        candidate_line
+                    )
+
+        return grouped_lines or line_values
+
+    longest_lines = []
+
+    for line in sorted(
+        line_values,
+        key=lambda value: len(
+            normalise_lookup_text(value)
+        ),
+        reverse=True
+    ):
+
+        line_norm = normalise_singular_lookup_text(
+            line
+        )
+
+        if not any(
+            line_norm != normalise_singular_lookup_text(existing)
+            and re.search(
+                rf"\b{re.escape(line_norm)}\b",
+                normalise_singular_lookup_text(existing)
+            )
+            for existing in longest_lines
         ):
-            return line
+            longest_lines.append(line)
 
-    return None
+    return longest_lines
 
 
 def detect_client_name(question):
@@ -1207,6 +1393,7 @@ def detect_intent(question):
         "source": "orders",
 
         "line": None,
+        "lines": [],
         "crop": None,
         "crop_family": None,
         "variety": None,
@@ -1324,9 +1511,12 @@ def detect_intent(question):
     # LINE
     # =================================================
 
-    intent["line"] = detect_line(
+    intent["lines"] = detect_lines(
         question
     )
+
+    if intent["lines"]:
+        intent["line"] = intent["lines"][0]
 
     intent["crop_family"] = crop_family_from_question(
         question
@@ -1442,21 +1632,33 @@ def apply_filters(df, intent):
         .any()
     )
 
+    selected_lines = intent.get("lines") or (
+        [intent["line"]]
+        if intent.get("line")
+        else []
+    )
+
     crop_overlaps_line = (
-        intent["line"]
+        selected_lines
         and intent["crop"]
-        and line_text_matches(
-            intent["crop"],
-            intent["line"]
+        and any(
+            line_group_matches(
+                intent["crop"],
+                line
+            )
+            for line in selected_lines
         )
     )
 
     variety_overlaps_line = (
-        intent["line"]
+        selected_lines
         and intent["variety"]
-        and line_text_matches(
-            intent["variety"],
-            intent["line"]
+        and any(
+            line_group_matches(
+                intent["variety"],
+                line
+            )
+            for line in selected_lines
         )
     )
 
@@ -1536,7 +1738,7 @@ def apply_filters(df, intent):
                 .astype(str)
                 .map(
                     lambda value: any(
-                        line_text_matches(
+                        line_exact_matches(
                             allowed_line,
                             value
                         )
@@ -1552,7 +1754,7 @@ def apply_filters(df, intent):
                 .astype(str)
                 .map(
                     lambda value: any(
-                        line_text_matches(
+                        line_exact_matches(
                             excluded_line,
                             value
                         )
@@ -1591,23 +1793,23 @@ def apply_filters(df, intent):
             == str(intent["variety"]).strip().upper()
         ]
 
-    if intent["line"]:
+    if selected_lines:
 
-        target_line = str(intent["line"])
+        target_lines = [
+            str(line)
+            for line in selected_lines
+        ]
 
         line_mask = (
             d["Line"]
             .astype(str)
             .map(
-                lambda value: (
-                    line_text_matches(
-                        target_line,
-                        value
-                    )
-                    or line_text_matches(
+                lambda value: any(
+                    line_exact_matches(
                         value,
                         target_line
                     )
+                    for target_line in target_lines
                 )
             )
             .fillna(False)
@@ -1634,7 +1836,7 @@ def apply_filters(df, intent):
 
     if (
         len(d) == 0
-        and intent["line"]
+        and selected_lines
         and (
             intent["crop"]
             or intent["variety"]
@@ -1735,10 +1937,13 @@ def forecast_seed_months(question):
 def show_seed_forecast(question, intent):
 
     if (
-        intent.get("line")
-        and line_text_matches(
-            "PETUNIA HYBRIDS",
-            intent["line"]
+        intent.get("lines")
+        and any(
+            line_exact_matches(
+                "PETUNIA HYBRIDS",
+                line
+            )
+            for line in intent["lines"]
         )
     ):
 
@@ -1985,6 +2190,7 @@ def intent_summary_rows(intent):
     labels = {
         "source": "Dataset",
         "client": "Client",
+        "lines": "Lines",
         "line": "Line",
         "crop": "Crop",
         "crop_family": "Crop Family",
@@ -2000,6 +2206,23 @@ def intent_summary_rows(intent):
 
         value = intent.get(key)
 
+        if (
+            key == "line"
+            and intent.get("lines")
+        ):
+            continue
+
+        if isinstance(
+            value,
+            list
+        ):
+            value = ", ".join(
+                [
+                    str(item)
+                    for item in value
+                ]
+            )
+
         if value not in [
             None,
             ""
@@ -2012,6 +2235,222 @@ def intent_summary_rows(intent):
     return pd.DataFrame(
         rows
     )
+
+
+def month_label(month):
+
+    if not month:
+        return None
+
+    try:
+        return pd.Timestamp(
+            year=2000,
+            month=int(month),
+            day=1
+        ).strftime("%B")
+
+    except Exception:
+        return str(month)
+
+
+def stable_question_for_exact_learning(question):
+
+    q_norm = normalise_lookup_text(
+        question
+    )
+
+    moving_date_words = [
+        "this year",
+        "last year",
+        "next year",
+        "previous year",
+        "this month",
+        "last month",
+        "next month",
+        "today",
+        "yesterday",
+        "tomorrow",
+        "current"
+    ]
+
+    return not any(
+        phrase in q_norm
+        for phrase in moving_date_words
+    )
+
+
+def intent_for_memory(intent):
+
+    return {
+        "source": intent.get("source"),
+        "line": intent.get("line"),
+        "lines": intent.get("lines"),
+        "crop": intent.get("crop"),
+        "crop_family": intent.get("crop_family"),
+        "variety": intent.get("variety"),
+        "client": intent.get("client"),
+        "year": intent.get("year"),
+        "month": intent.get("month")
+    }
+
+
+def save_quick_feedback(question, intent, rating, notes):
+
+    memory = load_learning_memory()
+
+    memory["feedback"].append({
+        "question": question,
+        "useful": rating,
+        "notes": notes,
+        "quick_feedback": True,
+        "detected": intent_for_memory(
+            intent
+        )
+    })
+
+    if (
+        rating == "Correct"
+        and stable_question_for_exact_learning(
+            question
+        )
+    ):
+
+        save_question_intent(
+            memory,
+            question,
+            intent_for_memory(
+                intent
+            )
+        )
+
+    return save_learning_memory(
+        memory
+    )
+
+
+def render_understanding_panel(question, intent):
+
+    with st.expander(
+        "What I understood",
+        expanded=True
+    ):
+
+        dataset_label = str(
+            intent.get("source", "orders")
+        ).title()
+
+        st.write(
+            f"I will answer this from **{dataset_label}**."
+        )
+
+        if intent.get("client"):
+
+            st.write(
+                f"Client: **{intent['client']}**"
+            )
+
+        if intent.get("lines"):
+
+            st.write(
+                f"Line: **{', '.join(intent['lines'])}**"
+            )
+
+        elif intent.get("line"):
+
+            st.write(
+                f"Line: **{intent['line']}**"
+            )
+
+        if intent.get("crop_family"):
+
+            st.write(
+                f"Crop family: **{intent['crop_family']}**"
+            )
+
+        if intent.get("crop"):
+
+            st.write(
+                f"Crop: **{intent['crop']}**"
+            )
+
+        if intent.get("variety"):
+
+            st.write(
+                f"Variety: **{intent['variety']}**"
+            )
+
+        period_parts = []
+
+        if intent.get("month"):
+
+            period_parts.append(
+                month_label(
+                    intent["month"]
+                )
+            )
+
+        if intent.get("year"):
+
+            period_parts.append(
+                str(intent["year"])
+            )
+
+        if period_parts:
+
+            st.write(
+                f"Period: **{' '.join(period_parts)}**"
+            )
+
+        st.caption(
+            "If this understanding is wrong, mark it below or use the detailed learning section after the answer."
+        )
+
+        if intent.get("learned"):
+
+            st.success(
+                "I used a saved correction for this question."
+            )
+
+        with st.form(
+            "quick_understanding_feedback_form"
+        ):
+
+            rating = st.radio(
+                "Was this understanding and answer correct?",
+                [
+                    "Correct",
+                    "Partly",
+                    "Wrong"
+                ],
+                horizontal=True
+            )
+
+            notes = st.text_input(
+                "Optional note"
+            )
+
+            submitted = st.form_submit_button(
+                "Save quick feedback"
+            )
+
+            if submitted:
+
+                if save_quick_feedback(
+                    question,
+                    intent,
+                    rating,
+                    notes
+                ):
+
+                    st.success(
+                        "Saved. I will use this feedback to improve future questions."
+                    )
+
+                else:
+
+                    st.warning(
+                        "I could not save the feedback file."
+                    )
 
 
 def render_learning_feedback(question, intent):
@@ -2180,6 +2619,7 @@ def render_learning_feedback(question, intent):
                     "detected": {
                         "source": intent["source"],
                         "line": intent["line"],
+                        "lines": intent.get("lines"),
                         "crop": intent["crop"],
                         "crop_family": intent.get("crop_family"),
                         "variety": intent["variety"],
@@ -2229,6 +2669,9 @@ def render_learning_feedback(question, intent):
                     exact_intent = {
                         "source": source_value,
                         "line": line_value,
+                        "lines": [
+                            line_value
+                        ] if line_value else None,
                         "crop": crop_value,
                         "crop_family": crop_family_value,
                         "variety": variety_value,
@@ -2295,27 +2738,10 @@ if question:
 
     intent = detect_intent(question)
 
-    with st.expander(
-        "What I understood",
-        expanded=False
-    ):
-
-        summary = intent_summary_rows(
-            intent
-        )
-
-        if len(summary) > 0:
-
-            st.dataframe(
-                summary,
-                use_container_width=True
-            )
-
-        if intent.get("learned"):
-
-            st.success(
-                "Applied a learned correction for this question."
-            )
+    render_understanding_panel(
+        question,
+        intent
+    )
 
     # =================================================
     # ACTIVE DATASET
@@ -2358,7 +2784,13 @@ if question:
             f"Variety: {intent['variety']}"
         )
 
-    if intent["line"]:
+    if intent.get("lines"):
+
+        st.caption(
+            f"Lines: {', '.join(intent['lines'])}"
+        )
+
+    elif intent["line"]:
 
         st.caption(
             f"Line: {intent['line']}"
@@ -2391,15 +2823,9 @@ if question:
 
         ql = question.lower()
 
-        compare_items = []
-
-        for line in KNOWN_LINES:
-
-            if line_text_matches(
-                line,
-                question
-            ):
-                compare_items.append(line)
+        compare_items = detect_lines(
+            question
+        )
 
         # =============================================
         # SALES VS RETURNS
@@ -2572,11 +2998,14 @@ if question:
                 temp = df_temp[
                     df_temp["Line"]
                     .astype(str)
-                    .str.contains(
-                        item,
-                        case=False,
-                        na=False
+                    .map(
+                        lambda value: line_exact_matches(
+                            value,
+                            item
+                        )
                     )
+                    .fillna(False)
+                    .astype(bool)
                 ]
 
                 qty_total = (
