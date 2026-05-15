@@ -849,6 +849,17 @@ def line_text_matches(line, question):
 def crop_family_from_question(question):
 
     q_norm = normalise_lookup_text(question)
+    family_aliases = learned_aliases(
+        "Crop Family"
+    )
+
+    for alias, family in family_aliases.items():
+
+        if lookup_text_matches(
+            alias,
+            question
+        ):
+            return str(family).strip().upper()
 
     if re.search(
         r"\bpetunias\b",
@@ -949,6 +960,24 @@ def load_learning_memory():
 
         memory["feedback"] = []
 
+    if "question_intents" not in memory:
+
+        memory["question_intents"] = {}
+
+    if "business_rules" not in memory:
+
+        memory["business_rules"] = {}
+
+    if "petunia_family" not in memory["business_rules"]:
+
+        memory["business_rules"]["petunia_family"] = {
+            "crop_contains": "PETUNIA",
+            "allowed_lines": PETUNIA_SEEDABLE_LINES,
+            "excluded_lines": [
+                "PETUNIA HYBRIDS"
+            ]
+        }
+
     return memory
 
 
@@ -984,6 +1013,41 @@ def learned_aliases(column):
         .get("aliases", {})
         .get(column, {})
     )
+
+
+def learned_question_intent(question):
+
+    memory = load_learning_memory()
+    key = normalise_lookup_text(question)
+
+    return (
+        memory
+        .get("question_intents", {})
+        .get(key)
+    )
+
+
+def apply_learned_question_intent(question, intent):
+
+    learned = learned_question_intent(
+        question
+    )
+
+    if not learned:
+        return intent
+
+    updated = {
+        **intent
+    }
+
+    for key, value in learned.items():
+
+        if key in updated:
+            updated[key] = value
+
+    updated["learned"] = True
+
+    return updated
 
 
 def unique_order_values(column):
@@ -1150,7 +1214,8 @@ def detect_intent(question):
         "rep": None,
 
         "year": None,
-        "month": None
+        "month": None,
+        "learned": False
     }
 
     # =================================================
@@ -1341,7 +1406,10 @@ def detect_intent(question):
 
             intent["month"] = num
 
-    return intent
+    return apply_learned_question_intent(
+        question,
+        intent
+    )
 
 # =====================================================
 # FILTERS
@@ -1445,7 +1513,23 @@ def apply_filters(df, intent):
 
         if crop_family == "PETUNIA":
 
-            allowed_lines = PETUNIA_SEEDABLE_LINES
+            rules = (
+                load_learning_memory()
+                .get("business_rules", {})
+                .get("petunia_family", {})
+            )
+
+            allowed_lines = rules.get(
+                "allowed_lines",
+                PETUNIA_SEEDABLE_LINES
+            )
+
+            excluded_lines = rules.get(
+                "excluded_lines",
+                [
+                    "PETUNIA HYBRIDS"
+                ]
+            )
 
             d = d[
                 d["Line"]
@@ -1457,6 +1541,22 @@ def apply_filters(df, intent):
                             value
                         )
                         for allowed_line in allowed_lines
+                    )
+                )
+                .fillna(False)
+                .astype(bool)
+            ]
+
+            d = d[
+                ~d["Line"]
+                .astype(str)
+                .map(
+                    lambda value: any(
+                        line_text_matches(
+                            excluded_line,
+                            value
+                        )
+                        for excluded_line in excluded_lines
                     )
                 )
                 .fillna(False)
@@ -1633,6 +1733,20 @@ def forecast_seed_months(question):
 
 
 def show_seed_forecast(question, intent):
+
+    if (
+        intent.get("line")
+        and line_text_matches(
+            "PETUNIA HYBRIDS",
+            intent["line"]
+        )
+    ):
+
+        st.warning(
+            "Petunia Hybrids is treated as a product line, not a seed-order crop family. Ask for 'petunias' when you want seedable Petunia crops from Seedlings, 12cm Colour Pot, and 15cm Colour Pots."
+        )
+
+        return
 
     target_months = forecast_seed_months(
         question
@@ -1841,11 +1955,74 @@ def save_alias(memory, column, alias, value):
     memory["aliases"][column][alias] = value
 
 
+def save_question_intent(memory, question, intent_update):
+
+    key = normalise_lookup_text(
+        question
+    )
+
+    if not key:
+        return
+
+    cleaned = {}
+
+    for intent_key, value in intent_update.items():
+
+        if value not in [
+            "",
+            None
+        ]:
+            cleaned[intent_key] = value
+
+    if not cleaned:
+        return
+
+    memory["question_intents"][key] = cleaned
+
+
+def intent_summary_rows(intent):
+
+    labels = {
+        "source": "Dataset",
+        "client": "Client",
+        "line": "Line",
+        "crop": "Crop",
+        "crop_family": "Crop Family",
+        "variety": "Variety",
+        "year": "Year",
+        "month": "Month",
+        "metric": "Metric"
+    }
+
+    rows = []
+
+    for key, label in labels.items():
+
+        value = intent.get(key)
+
+        if value not in [
+            None,
+            ""
+        ]:
+            rows.append({
+                "Filter": label,
+                "Value": value
+            })
+
+    return pd.DataFrame(
+        rows
+    )
+
+
 def render_learning_feedback(question, intent):
 
     with st.expander(
         "Help the app learn from this question"
     ):
+
+        st.caption(
+            "Save corrections here when the app misunderstands wording. Exact question corrections are applied before future answers."
+        )
 
         with st.form(
             "learning_feedback_form"
@@ -1866,7 +2043,34 @@ def render_learning_feedback(question, intent):
             )
 
             st.caption(
-                "Use aliases when the app misunderstands wording. Example: alias 'mixed' can mean variety 'MIX'."
+                "Aliases teach reusable wording. Exact question corrections teach this full question."
+            )
+
+            source_value = st.selectbox(
+                "Correct dataset",
+                [
+                    "",
+                    "orders",
+                    "sales",
+                    "returns"
+                ],
+                index=0
+            )
+
+            line_alias = st.text_input(
+                "Line alias phrase"
+            )
+
+            line_options = [
+                ""
+            ] + unique_order_values(
+                "Line"
+            )
+
+            line_value = st.selectbox(
+                "Correct line",
+                line_options,
+                index=0
             )
 
             crop_alias = st.text_input(
@@ -1882,6 +2086,19 @@ def render_learning_feedback(question, intent):
             crop_value = st.selectbox(
                 "Correct crop name",
                 crop_options,
+                index=0
+            )
+
+            crop_family_alias = st.text_input(
+                "Crop family alias phrase"
+            )
+
+            crop_family_value = st.selectbox(
+                "Correct crop family",
+                [
+                    "",
+                    "PETUNIA"
+                ],
                 index=0
             )
 
@@ -1915,6 +2132,39 @@ def render_learning_feedback(question, intent):
                 index=0
             )
 
+            year_value = st.number_input(
+                "Correct year",
+                min_value=0,
+                max_value=2100,
+                value=0,
+                step=1
+            )
+
+            month_value = st.selectbox(
+                "Correct month",
+                [
+                    "",
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8",
+                    "9",
+                    "10",
+                    "11",
+                    "12"
+                ],
+                index=0
+            )
+
+            remember_exact = st.checkbox(
+                "Remember these corrections for this exact question",
+                value=True
+            )
+
             submitted = st.form_submit_button(
                 "Save feedback"
             )
@@ -1931,6 +2181,7 @@ def render_learning_feedback(question, intent):
                         "source": intent["source"],
                         "line": intent["line"],
                         "crop": intent["crop"],
+                        "crop_family": intent.get("crop_family"),
                         "variety": intent["variety"],
                         "client": intent["client"],
                         "year": intent["year"],
@@ -1940,9 +2191,23 @@ def render_learning_feedback(question, intent):
 
                 save_alias(
                     memory,
+                    "Line",
+                    line_alias,
+                    line_value
+                )
+
+                save_alias(
+                    memory,
                     "Crop Name",
                     crop_alias,
                     crop_value
+                )
+
+                save_alias(
+                    memory,
+                    "Crop Family",
+                    crop_family_alias,
+                    crop_family_value
                 )
 
                 save_alias(
@@ -1958,6 +2223,25 @@ def render_learning_feedback(question, intent):
                     client_alias,
                     client_value
                 )
+
+                if remember_exact:
+
+                    exact_intent = {
+                        "source": source_value,
+                        "line": line_value,
+                        "crop": crop_value,
+                        "crop_family": crop_family_value,
+                        "variety": variety_value,
+                        "client": client_value,
+                        "year": int(year_value) if year_value else None,
+                        "month": int(month_value) if month_value else None
+                    }
+
+                    save_question_intent(
+                        memory,
+                        question,
+                        exact_intent
+                    )
 
                 if save_learning_memory(memory):
 
@@ -2010,6 +2294,28 @@ question = st.text_input(
 if question:
 
     intent = detect_intent(question)
+
+    with st.expander(
+        "What I understood",
+        expanded=False
+    ):
+
+        summary = intent_summary_rows(
+            intent
+        )
+
+        if len(summary) > 0:
+
+            st.dataframe(
+                summary,
+                use_container_width=True
+            )
+
+        if intent.get("learned"):
+
+            st.success(
+                "Applied a learned correction for this question."
+            )
 
     # =================================================
     # ACTIVE DATASET
