@@ -777,6 +777,69 @@ def normalise_lookup_text(value):
     ).strip()
 
 
+def normalise_singular_lookup_text(value):
+
+    text = normalise_lookup_text(value)
+
+    words = []
+
+    for word in text.split():
+
+        if len(word) > 3 and word.endswith("s"):
+            word = word[:-1]
+
+        words.append(word)
+
+    return " ".join(words)
+
+
+def lookup_text_matches(needle, haystack):
+
+    needle_norm = normalise_lookup_text(needle)
+    haystack_norm = normalise_lookup_text(haystack)
+
+    if needle_norm and needle_norm in haystack_norm:
+        return True
+
+    needle_singular = normalise_singular_lookup_text(needle)
+    haystack_singular = normalise_singular_lookup_text(haystack)
+
+    return bool(
+        needle_singular
+        and needle_singular in haystack_singular
+    )
+
+
+def line_text_matches(line, question):
+
+    if lookup_text_matches(
+        line,
+        question
+    ):
+        return True
+
+    line_tokens = [
+        token
+        for token in normalise_singular_lookup_text(line).split()
+        if not re.fullmatch(
+            r"\d+|\d+cm|cm",
+            token
+        )
+    ]
+
+    question_tokens = set(
+        normalise_singular_lookup_text(question).split()
+    )
+
+    return bool(
+        len(line_tokens) >= 2
+        and all(
+            token in question_tokens
+            for token in line_tokens
+        )
+    )
+
+
 def builders_lookup_text(value):
 
     text = normalise_lookup_text(value)
@@ -906,12 +969,22 @@ def learned_aliases(column):
 
 def unique_order_values(column):
 
-    values = (
-        df_orders[column]
-        .dropna()
-        .astype(str)
-        .str.strip()
+    frames = [
+        df_orders,
+        df_sales,
+        df_returns
+    ]
+
+    values = pd.concat(
+        [
+            frame[column]
+            for frame in frames
+            if column in frame.columns
+        ],
+        ignore_index=True
     )
+
+    values = values.dropna().astype(str).str.strip()
 
     values = values[
         values != ""
@@ -926,25 +999,54 @@ def unique_order_values(column):
 
 def detect_order_value(question, column):
 
-    q_norm = normalise_lookup_text(question)
-
     for alias, value in learned_aliases(
         column
     ).items():
 
-        alias_norm = normalise_lookup_text(
-            alias
-        )
-
-        if alias_norm and alias_norm in q_norm:
+        if lookup_text_matches(
+            alias,
+            question
+        ):
             return value
 
     for value in unique_order_values(column):
 
-        value_norm = normalise_lookup_text(value)
-
-        if value_norm and value_norm in q_norm:
+        if lookup_text_matches(
+            value,
+            question
+        ):
             return value
+
+    return None
+
+
+def detect_line(question):
+
+    for alias, value in learned_aliases(
+        "Line"
+    ).items():
+
+        if lookup_text_matches(
+            alias,
+            question
+        ):
+            return value
+
+    for line in KNOWN_LINES:
+
+        if line_text_matches(
+            line,
+            question
+        ):
+            return line
+
+    for line in unique_order_values("Line"):
+
+        if line_text_matches(
+            line,
+            question
+        ):
+            return line
 
     return None
 
@@ -1043,15 +1145,18 @@ def detect_intent(question):
     # SOURCE
     # =================================================
 
-    if any(
-        x in ql
-        for x in [
-            "seed",
-            "seeds",
-            "seed order",
-            "seed ordering"
-        ]
-    ):
+    seed_order_question = bool(
+        re.search(
+            r"\b(seed|seeds)\b",
+            ql
+        )
+        and not re.search(
+            r"\bseedlings?\b",
+            ql
+        )
+    )
+
+    if seed_order_question:
 
         intent["seed"] = True
         intent["source"] = "orders"
@@ -1111,11 +1216,9 @@ def detect_intent(question):
     # LINE
     # =================================================
 
-    for line in KNOWN_LINES:
-
-        if line.lower() in ql:
-
-            intent["line"] = line
+    intent["line"] = detect_line(
+        question
+    )
 
     # =================================================
     # CROP + VARIETY
@@ -1257,13 +1360,22 @@ def apply_filters(df, intent):
 
     if intent["line"]:
 
+        target_line = str(intent["line"])
+
         d = d[
             d["Line"]
             .astype(str)
-            .str.contains(
-                intent["line"],
-                case=False,
-                na=False
+            .map(
+                lambda value: (
+                    line_text_matches(
+                        target_line,
+                        value
+                    )
+                    or line_text_matches(
+                        value,
+                        target_line
+                    )
+                )
             )
         ]
 
@@ -1786,7 +1898,10 @@ if question:
     # COMPARE LOGIC
     # =================================================
 
-    if intent["seed"]:
+    if (
+        intent["seed"]
+        and intent["source"] == "orders"
+    ):
 
         show_seed_forecast(
             question,
@@ -1801,7 +1916,10 @@ if question:
 
         for line in KNOWN_LINES:
 
-            if line.lower() in ql:
+            if line_text_matches(
+                line,
+                question
+            ):
                 compare_items.append(line)
 
         # =============================================
