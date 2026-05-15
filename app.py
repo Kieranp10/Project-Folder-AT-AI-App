@@ -1306,6 +1306,22 @@ def apply_filters(df, intent):
     if len(d) == 0:
         return d
 
+    has_crop_values = (
+        d["Crop Name"]
+        .astype(str)
+        .str.strip()
+        .ne("")
+        .any()
+    )
+
+    has_variety_values = (
+        d["Variety"]
+        .astype(str)
+        .str.strip()
+        .ne("")
+        .any()
+    )
+
     if intent["client"]:
 
         client_text = (
@@ -1338,7 +1354,10 @@ def apply_filters(df, intent):
             )
         ]
 
-    if intent["crop"]:
+    if (
+        intent["crop"]
+        and has_crop_values
+    ):
 
         d = d[
             d["Crop Name"]
@@ -1348,7 +1367,10 @@ def apply_filters(df, intent):
             == str(intent["crop"]).strip().upper()
         ]
 
-    if intent["variety"]:
+    if (
+        intent["variety"]
+        and has_variety_values
+    ):
 
         d = d[
             d["Variety"]
