@@ -3393,6 +3393,7 @@ def forecast_weekly_sowing_rows(
                 day=1
             ).strftime("%B %Y"),
             "Monthly Demand": monthly_qty,
+            "Demand Priority Score": monthly_qty,
             "Notes": (
                 f"Orders only. {pd.Timestamp(year=history_year, month=target_month, day=1).strftime('%B %Y')} "
                 f"demand {monthly_qty:,.0f} split across 4 weeks. "
@@ -3415,13 +3416,17 @@ def forecast_weekly_sowing_rows(
 
     plan = plan.sort_values(
         [
-            "Week Ready For",
+            "Demand Priority Score",
+            "Monthly Demand",
             "Base Forecast Output Units",
+            "Week Ready For",
             "Crop Name"
         ],
         ascending=[
-            True,
             False,
+            False,
+            False,
+            True,
             True
         ]
     ).reset_index(drop=True)
@@ -3761,6 +3766,7 @@ def render_sowing_planner_export():
             "Sow Priority",
             "Line",
             "Crop Name",
+            "Demand Priority Score",
             "Grow Weeks",
             "Week Ready For",
             "Base Forecast Output Units",
