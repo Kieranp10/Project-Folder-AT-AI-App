@@ -9,6 +9,7 @@ from copy import copy
 from datetime import date
 from openpyxl import load_workbook
 from openpyxl.formula.translate import Translator
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 import json
 import os
 import re
@@ -3539,7 +3540,278 @@ def ensure_planner_rows(wb, required_rows):
     ws_weekly["R9"] = f"=SUM(N4:N{last_weekly_row})"
 
 
-def build_sowing_planner_workbook(plan, current_week, germ_pct, growth_pct):
+def sow_list_cavity(row, planning_tray_cells):
+
+    line_text = str(
+        row.get(
+            "Line",
+            ""
+        )
+    ).upper()
+
+    if "12CM" in line_text or "15CM" in line_text:
+        return 512
+
+    return int(
+        planning_tray_cells
+    )
+
+
+def sow_list_quantity(row, cavity):
+
+    seeds_needed = int(
+        row.get(
+            "Estimated Seeds Needed",
+            0
+        ) or 0
+    )
+
+    if seeds_needed <= 0:
+        seeds_needed = int(
+            row.get(
+                "Base Forecast Output Units",
+                0
+            ) or 0
+        ) * int(
+            row.get(
+                "Output Divisor",
+                1
+            ) or 1
+        )
+
+    cavity = max(
+        int(cavity or 1),
+        1
+    )
+
+    return max(
+        1,
+        int(
+            -(
+                -seeds_needed
+                // cavity
+            )
+        )
+    )
+
+
+def style_weekly_sow_list_sheet(ws):
+
+    header_fill = PatternFill(
+        "solid",
+        fgColor="A6A6A6"
+    )
+    list_fill = PatternFill(
+        "solid",
+        fgColor="D9D9D9"
+    )
+    white_fill = PatternFill(
+        "solid",
+        fgColor="FFFFFF"
+    )
+    thin = Side(
+        style="thin",
+        color="000000"
+    )
+    border = Border(
+        left=thin,
+        right=thin,
+        top=thin,
+        bottom=thin
+    )
+
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = Font(
+            bold=False
+        )
+        cell.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+            wrap_text=True
+        )
+        cell.border = border
+
+    for row in ws.iter_rows(
+        min_row=2,
+        max_row=ws.max_row
+    ):
+        for cell in row:
+            cell.border = border
+            cell.alignment = Alignment(
+                vertical="center",
+                wrap_text=True
+            )
+
+        row[0].fill = header_fill
+        row[1].fill = list_fill
+        row[7].fill = white_fill
+
+        for col_index in [
+            1,
+            2,
+            5,
+            6,
+            7,
+            12,
+            14,
+            15,
+            16,
+            17,
+            19,
+            20
+        ]:
+            row[col_index - 1].alignment = Alignment(
+                horizontal="center",
+                vertical="center",
+                wrap_text=True
+            )
+
+    widths = {
+        "A": 10,
+        "B": 13,
+        "C": 13,
+        "D": 34,
+        "E": 10,
+        "F": 15,
+        "G": 15,
+        "H": 28,
+        "I": 12,
+        "J": 16,
+        "K": 18,
+        "L": 13,
+        "M": 20,
+        "N": 12,
+        "O": 13,
+        "P": 16,
+        "Q": 16,
+        "R": 18,
+        "S": 18,
+        "T": 18,
+        "U": 42
+    }
+
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+
+def add_weekly_sow_list_sheet(
+    wb,
+    plan,
+    current_week,
+    plan_year,
+    planning_tray_cells
+):
+
+    sheet_name = "Weekly Sow List"
+
+    if sheet_name in wb.sheetnames:
+        del wb[sheet_name]
+
+    ws = wb.create_sheet(
+        sheet_name,
+        0
+    )
+
+    headers = [
+        "Year",
+        "Sowing List #",
+        "Date Sowed",
+        "Full Name Of Crop & Colour",
+        "Cavity ",
+        "Total Crops Sowed",
+        "Shanes Quantity",
+        "Comments",
+        "Batch #",
+        "Date out Germ Room",
+        "Person out of Germ Room",
+        "Sow Priority",
+        "Production Line",
+        "Grow Weeks",
+        "Week Ready For",
+        "Monthly Demand",
+        "Demand Priority Score",
+        "Seeds Needed",
+        "Seed Stock Status",
+        "Seed Stock On Hand",
+        "Seed Stock Match"
+    ]
+
+    ws.append(
+        headers
+    )
+
+    sow_list = plan.sort_values(
+        [
+            "Sow Priority",
+            "Line",
+            "Crop Name"
+        ],
+        ascending=[
+            True,
+            True,
+            True
+        ]
+    )
+
+    for _, row in sow_list.iterrows():
+
+        cavity = sow_list_cavity(
+            row,
+            planning_tray_cells
+        )
+
+        shanes_quantity = sow_list_quantity(
+            row,
+            cavity
+        )
+
+        comments = (
+            f"{row.get('Seed Stock Status', '')}. "
+            f"{row.get('History Month', '')} demand "
+            f"{float(row.get('Monthly Demand', 0) or 0):,.0f}."
+        ).strip()
+
+        ws.append([
+            int(plan_year),
+            int(current_week),
+            None,
+            str(row["Crop Name"]).upper(),
+            cavity,
+            None,
+            shanes_quantity,
+            comments,
+            None,
+            None,
+            None,
+            int(row["Sow Priority"]),
+            row.get("Line", ""),
+            int(row.get("Grow Weeks", 0) or 0),
+            int(row.get("Week Ready For", 0) or 0),
+            float(row.get("Monthly Demand", 0) or 0),
+            float(row.get("Demand Priority Score", 0) or 0),
+            int(row.get("Estimated Seeds Needed", 0) or 0),
+            row.get("Seed Stock Status", ""),
+            int(row.get("Seed Stock On Hand", 0) or 0),
+            row.get("Seed Stock Match", "")
+        ])
+
+    style_weekly_sow_list_sheet(
+        ws
+    )
+
+
+def build_sowing_planner_workbook(
+    plan,
+    current_week,
+    germ_pct,
+    growth_pct,
+    plan_year,
+    planning_tray_cells
+):
 
     path = template_path()
 
@@ -3548,6 +3820,14 @@ def build_sowing_planner_workbook(plan, current_week, germ_pct, growth_pct):
 
     wb = load_workbook(
         path
+    )
+
+    add_weekly_sow_list_sheet(
+        wb,
+        plan,
+        current_week,
+        plan_year,
+        planning_tray_cells
     )
 
     ensure_planner_rows(
@@ -3788,7 +4068,9 @@ def render_sowing_planner_export():
             plan,
             int(current_week),
             float(germ_pct),
-            float(growth_pct)
+            float(growth_pct),
+            int(plan_year),
+            int(planning_tray_cells)
         )
 
         if workbook is None:
