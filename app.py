@@ -4,6 +4,11 @@ import plotly.express as px
 from openai import OpenAI
 from werkzeug.security import check_password_hash
 from pathlib import Path
+from io import BytesIO
+from copy import copy
+from datetime import date
+from openpyxl import load_workbook
+from openpyxl.formula.translate import Translator
 import json
 import os
 import re
@@ -388,6 +393,9 @@ PETUNIA_SEEDABLE_LINES = [
     "15CM COLOUR POTS"
 ]
 
+SOWING_PLANNER_TEMPLATE = "AT_Nursery_Weekly_Sowing_Planner_V3.xlsx"
+GROW_WEEKS_FILE = "wholesale_nursery_seedling_sale_weeks.xlsx"
+
 # =====================================================
 # APP DIRECTORY
 # =====================================================
@@ -395,6 +403,41 @@ PETUNIA_SEEDABLE_LINES = [
 def app_dir():
 
     return Path(__file__).resolve().parent
+
+
+def template_path():
+
+    local_path = app_dir() / SOWING_PLANNER_TEMPLATE
+
+    if local_path.is_file():
+        return local_path
+
+    documents_path = (
+        Path.home()
+        / "Documents"
+        / SOWING_PLANNER_TEMPLATE
+    )
+
+    if documents_path.is_file():
+        return documents_path
+
+    return local_path
+
+
+def grow_weeks_path():
+
+    candidates = [
+        app_dir() / GROW_WEEKS_FILE,
+        Path.home() / "Documents" / GROW_WEEKS_FILE,
+        Path.home() / "Downloads" / GROW_WEEKS_FILE
+    ]
+
+    for candidate in candidates:
+
+        if candidate.is_file():
+            return candidate
+
+    return candidates[0]
 
 # =====================================================
 # COLUMN FINDER
@@ -2144,6 +2187,753 @@ def show_seed_forecast(question, intent):
     )
 
 
+# =====================================================
+# SOWING PLANNER EXPORT
+# =====================================================
+
+def load_grow_weeks_table():
+
+    path = grow_weeks_path()
+
+    if not path.is_file():
+        return pd.DataFrame(
+            columns=[
+                "Crop",
+                "Estimated Weeks to Sale"
+            ]
+        )
+
+    try:
+        timing = pd.read_excel(path)
+    except Exception:
+        return pd.DataFrame(
+            columns=[
+                "Crop",
+                "Estimated Weeks to Sale"
+            ]
+        )
+
+    if len(timing) == 0:
+        return pd.DataFrame(
+            columns=[
+                "Crop",
+                "Estimated Weeks to Sale"
+            ]
+        )
+
+    crop_col = first_column(
+        timing,
+        [
+            "Crop",
+            "Crop Name",
+            "Crop / Series"
+        ]
+    )
+
+    weeks_col = first_column(
+        timing,
+        [
+            "Estimated Weeks to Sale",
+            "Weeks to Sale",
+            "Weeks to Tray Sale",
+            "Grow Weeks"
+        ]
+    )
+
+    if not crop_col or not weeks_col:
+        return pd.DataFrame(
+            columns=[
+                "Crop",
+                "Estimated Weeks to Sale"
+            ]
+        )
+
+    result = timing[
+        [
+            crop_col,
+            weeks_col
+        ]
+    ].copy()
+
+    result.columns = [
+        "Crop",
+        "Estimated Weeks to Sale"
+    ]
+
+    result["Crop"] = (
+        result["Crop"]
+        .astype(str)
+        .str.upper()
+        .str.strip()
+    )
+
+    result["Estimated Weeks to Sale"] = pd.to_numeric(
+        result["Estimated Weeks to Sale"],
+        errors="coerce"
+    )
+
+    result = result[
+        result["Crop"].ne("")
+        & result["Estimated Weeks to Sale"].notna()
+    ].copy()
+
+    return result
+
+
+def clean_timing_name(value):
+
+    text = normalise_singular_lookup_text(
+        value
+    )
+
+    text = re.sub(
+        r"\ball variet(?:y|ie)\b",
+        "",
+        text
+    )
+
+    text = re.sub(
+        r"\ball series\b",
+        "",
+        text
+    )
+
+    return re.sub(
+        r"\s+",
+        " ",
+        text
+    ).strip()
+
+
+def lookup_grow_weeks(crop_name, variety, timing):
+
+    if len(timing) == 0:
+        return None
+
+    crop_text = str(crop_name).strip().upper()
+    variety_text = str(variety).strip().upper()
+
+    search_values = [
+        f"{crop_text} {variety_text}".strip(),
+        crop_text
+    ]
+
+    timing_rows = []
+
+    for _, row in timing.iterrows():
+        timing_rows.append(
+            (
+                str(row["Crop"]),
+                row["Estimated Weeks to Sale"]
+            )
+        )
+
+    for search_value in search_values:
+
+        search_norm = clean_timing_name(
+            search_value
+        )
+
+        for timing_name, weeks in timing_rows:
+
+            timing_norm = clean_timing_name(
+                timing_name
+            )
+
+            if search_norm == timing_norm:
+                return int(round(float(weeks)))
+
+    for search_value in search_values:
+
+        search_norm = clean_timing_name(
+            search_value
+        )
+
+        for timing_name, weeks in timing_rows:
+
+            timing_norm = clean_timing_name(
+                timing_name
+            )
+
+            if (
+                timing_norm
+                and (
+                    search_norm.startswith(
+                        timing_norm
+                    )
+                    or timing_norm.startswith(
+                        search_norm
+                    )
+                )
+            ):
+                return int(round(float(weeks)))
+
+    first_word = clean_timing_name(
+        crop_text
+    ).split()
+
+    if first_word:
+
+        first_word = first_word[0]
+
+        for timing_name, weeks in timing_rows:
+
+            timing_norm = clean_timing_name(
+                timing_name
+            )
+
+            if timing_norm == first_word:
+                return int(round(float(weeks)))
+
+    return None
+
+
+def iso_week_start(year, week):
+
+    target_year = int(year)
+    target_week = int(week)
+
+    while True:
+
+        try:
+            return date.fromisocalendar(
+                target_year,
+                target_week,
+                1
+            )
+
+        except ValueError:
+
+            last_week = date(
+                target_year,
+                12,
+                28
+            ).isocalendar().week
+
+            if target_week > last_week:
+                target_week -= last_week
+                target_year += 1
+            else:
+                target_week = 1
+
+
+def output_divisor_for_order(line, cavity):
+
+    line_text = str(line).upper()
+
+    if "PLANT TO PLATE" in line_text:
+        return None
+
+    if "PETUNIA HYBRIDS" in line_text:
+        return None
+
+    if "SEEDLINGS" in line_text:
+
+        if float(cavity or 0) == 4:
+            return 4
+
+        return 6
+
+    if "12CM" in line_text:
+        return 1
+
+    if "15CM" in line_text:
+        return 2
+
+    return None
+
+
+def product_display_name(crop_name, variety):
+
+    crop = str(crop_name).strip().upper()
+    var = str(variety).strip().upper()
+
+    if not var or var in [
+        "NAN",
+        "NONE"
+    ]:
+        return crop
+
+    if var in crop:
+        return crop
+
+    return f"{crop} {var}"
+
+
+def forecast_weekly_sowing_rows(current_week, plan_year):
+
+    timing = load_grow_weeks_table()
+
+    if len(timing) == 0:
+        return (
+            pd.DataFrame(),
+            [
+                f"Missing {GROW_WEEKS_FILE}. Add it to the app folder before exporting a sowing plan."
+            ]
+        )
+
+    orders = ensure_standard_columns(
+        df_orders.copy()
+    )
+
+    orders = orders[
+        orders["Date"].notna()
+        & orders["Quantity"].gt(0)
+    ].copy()
+
+    if len(orders) == 0:
+        return (
+            pd.DataFrame(),
+            [
+                "No order data was available for the sowing forecast."
+            ]
+        )
+
+    orders["Output Divisor"] = orders.apply(
+        lambda row: output_divisor_for_order(
+            row["Line"],
+            row["Cavity"]
+        ),
+        axis=1
+    )
+
+    orders = orders[
+        orders["Output Divisor"].notna()
+    ].copy()
+
+    orders["Year"] = orders["Date"].dt.year
+    orders["Month"] = orders["Date"].dt.month
+    orders["Planner Crop"] = orders.apply(
+        lambda row: product_display_name(
+            row["Crop Name"],
+            row["Variety"]
+        ),
+        axis=1
+    )
+
+    grouped = (
+        orders
+        .groupby(
+            [
+                "Line",
+                "Crop Name",
+                "Variety",
+                "Cavity",
+                "Output Divisor"
+            ],
+            dropna=False
+        )
+        .size()
+        .reset_index(name="Rows")
+    )
+
+    monthly = (
+        orders
+        .groupby(
+            [
+                "Year",
+                "Month",
+                "Line",
+                "Crop Name",
+                "Variety",
+                "Cavity",
+                "Output Divisor"
+            ],
+            dropna=False
+        )["Quantity"]
+        .sum()
+        .reset_index()
+    )
+
+    rows = []
+    warnings = []
+
+    for _, product in grouped.iterrows():
+
+        grow_weeks = lookup_grow_weeks(
+            product["Crop Name"],
+            product["Variety"],
+            timing
+        )
+
+        if grow_weeks is None:
+            warnings.append(
+                f"No grow weeks found for {product_display_name(product['Crop Name'], product['Variety'])}."
+            )
+            continue
+
+        ready_week_start = iso_week_start(
+            plan_year,
+            int(current_week) + int(grow_weeks)
+        )
+
+        target_year = ready_week_start.year
+        target_month = ready_week_start.month
+        history_year = target_year - 1
+
+        demand = monthly[
+            (monthly["Year"] == history_year)
+            & (monthly["Month"] == target_month)
+            & (monthly["Line"].astype(str) == str(product["Line"]))
+            & (monthly["Crop Name"].astype(str) == str(product["Crop Name"]))
+            & (monthly["Variety"].astype(str) == str(product["Variety"]))
+            & (monthly["Cavity"].astype(float) == float(product["Cavity"]))
+            & (
+                monthly["Output Divisor"].astype(float)
+                == float(product["Output Divisor"])
+            )
+        ]
+
+        monthly_qty = demand["Quantity"].sum()
+
+        if monthly_qty <= 0:
+            continue
+
+        weekly_qty = int(
+            max(
+                1,
+                round(
+                    monthly_qty / 4
+                )
+            )
+        )
+
+        rows.append({
+            "Line": product["Line"],
+            "Crop Name": product_display_name(
+                product["Crop Name"],
+                product["Variety"]
+            ),
+            "Grow Weeks": int(grow_weeks),
+            "Week Ready For": int(current_week) + int(grow_weeks),
+            "Grow Tray": "",
+            "Base Forecast Output Units": weekly_qty,
+            "Output Divisor": int(product["Output Divisor"]),
+            "History Month": pd.Timestamp(
+                year=history_year,
+                month=target_month,
+                day=1
+            ).strftime("%B %Y"),
+            "Monthly Demand": monthly_qty,
+            "Notes": (
+                f"Orders only. {pd.Timestamp(year=history_year, month=target_month, day=1).strftime('%B %Y')} "
+                f"demand {monthly_qty:,.0f} split across 4 weeks."
+            )
+        })
+
+    plan = pd.DataFrame(rows)
+
+    if len(plan) == 0:
+        return (
+            plan,
+            warnings[:20]
+            + [
+                "No sowing rows were generated after applying grow weeks, line exclusions, and order demand."
+            ]
+        )
+
+    plan = plan.sort_values(
+        [
+            "Week Ready For",
+            "Base Forecast Output Units",
+            "Crop Name"
+        ],
+        ascending=[
+            True,
+            False,
+            True
+        ]
+    ).reset_index(drop=True)
+
+    plan["Sow Priority"] = range(
+        1,
+        len(plan) + 1
+    )
+
+    return (
+        plan,
+        warnings[:20]
+    )
+
+
+def copy_cell_template(source_cell, target_cell):
+
+    if source_cell.has_style:
+        target_cell._style = copy(
+            source_cell._style
+        )
+
+    target_cell.number_format = source_cell.number_format
+    target_cell.font = copy(source_cell.font)
+    target_cell.fill = copy(source_cell.fill)
+    target_cell.border = copy(source_cell.border)
+    target_cell.alignment = copy(source_cell.alignment)
+
+    if (
+        isinstance(source_cell.value, str)
+        and source_cell.value.startswith("=")
+    ):
+        target_cell.value = Translator(
+            source_cell.value,
+            origin=source_cell.coordinate
+        ).translate_formula(
+            target_cell.coordinate
+        )
+    else:
+        target_cell.value = None
+
+
+def ensure_planner_rows(wb, required_rows):
+
+    input_start = 9
+    input_template_row = 58
+    weekly_start = 4
+    weekly_template_row = 53
+
+    if required_rows <= 50:
+        return
+
+    ws_inputs = wb["Inputs"]
+    ws_weekly = wb["Weekly Plan"]
+
+    for offset in range(
+        50,
+        required_rows
+    ):
+
+        input_row = input_start + offset
+        weekly_row = weekly_start + offset
+
+        for col in range(
+            1,
+            ws_inputs.max_column + 1
+        ):
+            copy_cell_template(
+                ws_inputs.cell(
+                    input_template_row,
+                    col
+                ),
+                ws_inputs.cell(
+                    input_row,
+                    col
+                )
+            )
+
+        for col in range(
+            1,
+            16
+        ):
+            copy_cell_template(
+                ws_weekly.cell(
+                    weekly_template_row,
+                    col
+                ),
+                ws_weekly.cell(
+                    weekly_row,
+                    col
+                )
+            )
+
+    last_weekly_row = weekly_start + required_rows - 1
+
+    ws_weekly["R5"] = f"=SUM(L4:L{last_weekly_row})"
+    ws_weekly["R6"] = f"=SUMIF(G4:G{last_weekly_row},595,M4:M{last_weekly_row})"
+    ws_weekly["R7"] = f"=SUMIF(G4:G{last_weekly_row},512,M4:M{last_weekly_row})"
+    ws_weekly["R8"] = f"=SUMIF(G4:G{last_weekly_row},128,M4:M{last_weekly_row})"
+    ws_weekly["R9"] = f"=SUM(N4:N{last_weekly_row})"
+
+
+def build_sowing_planner_workbook(plan, current_week, germ_pct, growth_pct):
+
+    path = template_path()
+
+    if not path.is_file():
+        return None
+
+    wb = load_workbook(
+        path
+    )
+
+    ensure_planner_rows(
+        wb,
+        len(plan)
+    )
+
+    ws = wb["Inputs"]
+
+    ws["B2"] = int(current_week)
+    ws["B3"] = float(germ_pct)
+    ws["B4"] = float(growth_pct)
+
+    manual_cols = [
+        "A",
+        "B",
+        "C",
+        "E",
+        "G",
+        "H",
+        "K",
+        "U"
+    ]
+
+    final_row = 8 + max(
+        50,
+        len(plan)
+    )
+
+    for row in range(
+        9,
+        final_row + 1
+    ):
+
+        for col in manual_cols:
+            ws[f"{col}{row}"] = None
+
+    for index, row in plan.iterrows():
+
+        excel_row = 9 + index
+
+        ws[f"A{excel_row}"] = index + 1
+        ws[f"B{excel_row}"] = row["Crop Name"]
+        ws[f"C{excel_row}"] = int(row["Sow Priority"])
+        ws[f"E{excel_row}"] = int(row["Grow Weeks"])
+        ws[f"G{excel_row}"] = None
+        ws[f"H{excel_row}"] = int(row["Base Forecast Output Units"])
+        ws[f"K{excel_row}"] = int(row["Output Divisor"])
+        ws[f"U{excel_row}"] = row["Notes"]
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    return output
+
+
+def render_sowing_planner_export():
+
+    st.header(
+        "Weekly Sowing Planner Export"
+    )
+
+    st.caption(
+        "Uses orders only. The order date is treated as the ready-to-sell period, then demand is averaged across the month to create this week's sowing quantities."
+    )
+
+    template_available = template_path().is_file()
+    timing_available = grow_weeks_path().is_file()
+
+    if not template_available:
+        st.warning(
+            f"Missing {SOWING_PLANNER_TEMPLATE}. Add it to the app folder or Documents folder."
+        )
+
+    if not timing_available:
+        st.warning(
+            f"Missing {GROW_WEEKS_FILE}. Add the crop grow-week lookup to the app folder, Documents, or Downloads."
+        )
+
+    today = pd.Timestamp.today()
+    default_week = int(
+        today.isocalendar().week
+    )
+
+    col1, col2, col3 = st.columns(3)
+
+    current_week = col1.number_input(
+        "Current production week",
+        min_value=1,
+        max_value=53,
+        value=default_week,
+        step=1
+    )
+
+    plan_year = col2.number_input(
+        "Planning year",
+        min_value=2020,
+        max_value=2100,
+        value=int(today.year),
+        step=1
+    )
+
+    germ_pct = col3.number_input(
+        "Default germination %",
+        min_value=0.1,
+        max_value=1.0,
+        value=0.9,
+        step=0.01
+    )
+
+    growth_pct = st.number_input(
+        "Sales growth %",
+        min_value=-1.0,
+        max_value=5.0,
+        value=0.05,
+        step=0.01
+    )
+
+    if st.button(
+        "Build sowing planner"
+    ):
+
+        plan, warnings = forecast_weekly_sowing_rows(
+            int(current_week),
+            int(plan_year)
+        )
+
+        for warning in warnings:
+            st.warning(
+                warning
+            )
+
+        if len(plan) == 0:
+            return
+
+        st.subheader(
+            "Planner Preview"
+        )
+
+        preview_cols = [
+            "Sow Priority",
+            "Line",
+            "Crop Name",
+            "Grow Weeks",
+            "Week Ready For",
+            "Base Forecast Output Units",
+            "Output Divisor",
+            "History Month"
+        ]
+
+        st.dataframe(
+            plan[preview_cols],
+            use_container_width=True
+        )
+
+        workbook = build_sowing_planner_workbook(
+            plan,
+            int(current_week),
+            float(germ_pct),
+            float(growth_pct)
+        )
+
+        if workbook is None:
+            st.warning(
+                "Could not build the workbook because the template was not found."
+            )
+            return
+
+        filename = (
+            f"AT_Nursery_Sowing_Planner_Week_{int(current_week)}_"
+            f"{int(plan_year)}.xlsx"
+        )
+
+        st.download_button(
+            "Download filled sowing planner",
+            data=workbook,
+            file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+
 def save_alias(memory, column, alias, value):
 
     alias = str(alias).strip()
@@ -3301,6 +4091,8 @@ R{net_sales:,.2f}
         question,
         intent
     )
+
+render_sowing_planner_export()
 
 # =====================================================
 # DASHBOARD
