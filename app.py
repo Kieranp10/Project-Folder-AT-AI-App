@@ -395,6 +395,13 @@ PETUNIA_SEEDABLE_LINES = [
 
 SOWING_PLANNER_TEMPLATE = "AT_Nursery_Weekly_Sowing_Planner_V3.xlsx"
 GROW_WEEKS_FILE = "wholesale_nursery_seedling_sale_weeks.xlsx"
+SEED_STOCK_FILE = "seed_stock.xlsx"
+SEED_STOCK_FILES = [
+    SEED_STOCK_FILE,
+    "seed_stock.csv",
+    "2026 - Seed Stock.xlsx",
+    "2026 - Seed Stock.csv"
+]
 
 # =====================================================
 # APP DIRECTORY
@@ -430,6 +437,29 @@ def grow_weeks_path():
         app_dir() / GROW_WEEKS_FILE,
         Path.home() / "Documents" / GROW_WEEKS_FILE,
         Path.home() / "Downloads" / GROW_WEEKS_FILE
+    ]
+
+    for candidate in candidates:
+
+        if candidate.is_file():
+            return candidate
+
+    return candidates[0]
+
+
+def seed_stock_path():
+
+    search_dirs = [
+        app_dir(),
+        Path.home() / "Documents",
+        Path.home() / "Downloads",
+        Path("Z:/Seeds & Sowing/Seed Stock")
+    ]
+
+    candidates = [
+        folder / filename
+        for folder in search_dirs
+        for filename in SEED_STOCK_FILES
     ]
 
     for candidate in candidates:
@@ -2191,6 +2221,7 @@ def show_seed_forecast(question, intent):
 # SOWING PLANNER EXPORT
 # =====================================================
 
+@st.cache_data(show_spinner=False)
 def load_grow_weeks_table():
 
     path = grow_weeks_path()
@@ -2280,6 +2311,469 @@ def load_grow_weeks_table():
     return result
 
 
+def read_seed_stock_source(source):
+
+    if source is None:
+
+        path = seed_stock_path()
+
+        if not path.is_file():
+            return pd.DataFrame()
+
+        name = path.name.lower()
+        reader_source = path
+
+    else:
+
+        name = str(getattr(source, "name", "")).lower()
+        reader_source = source
+
+    try:
+
+        if name.endswith(".csv"):
+            return pd.read_csv(reader_source)
+
+        return pd.read_excel(reader_source)
+
+    except Exception:
+        return pd.DataFrame()
+
+
+def parse_at_seed_stock_layout(stock):
+
+    if (
+        "Crop" not in stock.columns
+        or "Stock Take" not in stock.columns
+    ):
+        return None
+
+    first_row = stock.iloc[0] if len(stock) > 0 else pd.Series(dtype="object")
+
+    total_cols = [
+        col
+        for col in stock.columns
+        if str(first_row.get(col, "")).strip().lower() == "total"
+    ]
+
+    qty_col = None
+
+    if total_cols:
+        qty_col = total_cols[-1]
+
+    elif "Stock Take.1" in stock.columns:
+        qty_col = "Stock Take.1"
+
+    elif "Stock Take" in stock.columns:
+        qty_col = "Stock Take"
+
+    if qty_col is None:
+        return None
+
+    result = pd.DataFrame()
+
+    result["Crop"] = (
+        stock["Crop"]
+        .astype(str)
+        .str.upper()
+        .str.strip()
+    )
+
+    result["Variety"] = ""
+
+    result["Quantity On Hand"] = pd.to_numeric(
+        stock[qty_col],
+        errors="coerce"
+    ).fillna(0)
+
+    result = result[
+        result["Crop"].ne("")
+        & result["Crop"].str.upper().ne("NAN")
+        & ~result["Crop"].str.lower().isin(
+            [
+                "price",
+                "crop"
+            ]
+        )
+        & result["Quantity On Hand"].gt(0)
+    ].copy()
+
+    result["Stock Name"] = result["Crop"]
+    result["Match Text"] = result["Stock Name"].map(
+        clean_timing_name
+    )
+    result["Family"] = result["Match Text"].map(
+        seed_stock_family
+    )
+
+    return result
+
+
+def load_seed_stock_table(source=None):
+
+    stock = read_seed_stock_source(source)
+
+    if len(stock) == 0:
+        return (
+            pd.DataFrame(
+                columns=[
+                    "Crop",
+                    "Variety",
+                    "Quantity On Hand",
+                    "Stock Name",
+                    "Match Text",
+                    "Family"
+                ]
+            ),
+            []
+        )
+
+    at_stock = parse_at_seed_stock_layout(
+        stock
+    )
+
+    if at_stock is not None:
+        return (
+            at_stock,
+            []
+        )
+
+    stock.columns = (
+        stock.columns
+        .astype(str)
+        .str.strip()
+    )
+
+    crop_col = first_column(
+        stock,
+        [
+            "Crop",
+            "Crop Name",
+            "Product",
+            "Seed",
+            "Seed Name",
+            "Item",
+            "Description"
+        ]
+    )
+
+    variety_col = first_column(
+        stock,
+        [
+            "Variety",
+            "Cultivar",
+            "Colour",
+            "Color",
+            "Series"
+        ]
+    )
+
+    qty_col = first_column(
+        stock,
+        [
+            "Quantity On Hand",
+            "Qty On Hand",
+            "On Hand",
+            "Stock On Hand",
+            "Stock",
+            "Qty",
+            "Quantity",
+            "Seeds"
+        ]
+    )
+
+    warnings = []
+
+    if not crop_col or not qty_col:
+        return (
+            pd.DataFrame(
+                columns=[
+                    "Crop",
+                    "Variety",
+                    "Quantity On Hand",
+                    "Stock Name",
+                    "Match Text",
+                    "Family"
+                ]
+            ),
+            [
+                "Seed stock list needs at least a crop/product column and a quantity/on-hand column."
+            ]
+        )
+
+    result = pd.DataFrame()
+
+    result["Crop"] = (
+        stock[crop_col]
+        .astype(str)
+        .str.upper()
+        .str.strip()
+    )
+
+    if variety_col:
+        result["Variety"] = (
+            stock[variety_col]
+            .astype(str)
+            .str.upper()
+            .str.strip()
+        )
+    else:
+        result["Variety"] = ""
+
+    result["Quantity On Hand"] = pd.to_numeric(
+        stock[qty_col],
+        errors="coerce"
+    ).fillna(0)
+
+    result = result[
+        result["Crop"].ne("")
+        & result["Crop"].str.upper().ne("NAN")
+        & result["Quantity On Hand"].gt(0)
+    ].copy()
+
+    result["Stock Name"] = result.apply(
+        lambda row: product_display_name(
+            row["Crop"],
+            row["Variety"]
+        ),
+        axis=1
+    )
+
+    result["Match Text"] = result["Stock Name"].map(
+        clean_timing_name
+    )
+
+    result["Family"] = result["Match Text"].map(
+        seed_stock_family
+    )
+
+    return (
+        result,
+        warnings
+    )
+
+
+def seed_stock_family(value):
+
+    words = [
+        word
+        for word in clean_timing_name(value).split()
+        if word not in [
+            "all",
+            "variety",
+            "serie",
+            "series",
+            "mix"
+        ]
+    ]
+
+    if not words:
+        return ""
+
+    return words[0]
+
+
+def seed_stock_match_text(crop_name):
+
+    return clean_timing_name(
+        crop_name
+    )
+
+
+def summarise_stock_options(options):
+
+    if len(options) == 0:
+        return ""
+
+    return ", ".join(
+        options
+        .sort_values(
+            "Quantity On Hand",
+            ascending=False
+        )
+        .head(4)
+        .apply(
+            lambda row: f"{row['Stock Name']} ({row['Quantity On Hand']:,.0f})",
+            axis=1
+        )
+        .tolist()
+    )
+
+
+def apply_seed_stock_to_plan(plan, stock, germ_pct, growth_pct):
+
+    if len(plan) == 0:
+        return (
+            plan,
+            []
+        )
+
+    plan = plan.copy()
+
+    plan["Estimated Seeds Needed"] = (
+        (
+            plan["Base Forecast Output Units"].astype(float)
+            * plan["Output Divisor"].astype(float)
+            * (1 + float(growth_pct))
+        )
+        / max(
+            float(germ_pct),
+            0.01
+        )
+    ).round().astype(int)
+
+    plan["Seed Stock Status"] = "No stock list"
+    plan["Seed Stock Match"] = ""
+    plan["Seed Stock On Hand"] = 0
+
+    if len(stock) == 0:
+        return (
+            plan,
+            []
+        )
+
+    available = stock.copy()
+    warnings = []
+
+    for index, row in plan.iterrows():
+
+        needed = int(
+            row["Estimated Seeds Needed"]
+        )
+
+        requested_text = seed_stock_match_text(
+            row["Crop Name"]
+        )
+
+        requested_family = seed_stock_family(
+            row["Crop Name"]
+        )
+
+        exact = available[
+            available["Match Text"].eq(requested_text)
+        ].copy()
+
+        match_type = "Exact"
+        options = exact
+
+        if len(options) == 0:
+
+            options = available[
+                available["Family"].eq(requested_family)
+            ].copy()
+
+            match_type = "Close variety"
+
+        available_qty = int(
+            options["Quantity On Hand"].sum()
+        ) if len(options) > 0 else 0
+
+        match_summary = summarise_stock_options(
+            options
+        )
+
+        if available_qty <= 0:
+            status = "Missing"
+            warnings.append(
+                f"No seed stock found for {row['Crop Name']}."
+            )
+
+        elif available_qty < needed:
+            status = "Low stock"
+            warnings.append(
+                f"Low seed stock for {row['Crop Name']}: need {needed:,.0f}, stock match has {available_qty:,.0f}."
+            )
+
+        elif match_type == "Close variety":
+            status = "Use close variety"
+            warnings.append(
+                f"{row['Crop Name']} has no exact seed stock match; close stock can cover it: {match_summary}."
+            )
+
+        else:
+            status = "In stock"
+
+        plan.loc[index, "Seed Stock Status"] = status
+        plan.loc[index, "Seed Stock Match"] = match_summary
+        plan.loc[index, "Seed Stock On Hand"] = available_qty
+
+        if status not in [
+            "Missing",
+            "Low stock"
+        ]:
+
+            remaining = needed
+
+            for stock_index in options.sort_values(
+                "Quantity On Hand",
+                ascending=False
+            ).index:
+
+                take = min(
+                    remaining,
+                    int(available.loc[stock_index, "Quantity On Hand"])
+                )
+
+                available.loc[stock_index, "Quantity On Hand"] -= take
+                remaining -= take
+
+                if remaining <= 0:
+                    break
+
+    plan["Notes"] = (
+        plan["Notes"].astype(str)
+        + " Seed stock: "
+        + plan["Seed Stock Status"].astype(str)
+        + ". "
+        + plan["Seed Stock Match"].astype(str)
+    )
+
+    return (
+        plan,
+        warnings[:20]
+    )
+
+
+def build_timing_lookup(timing):
+
+    rows = []
+    exact = {}
+
+    for _, row in timing.iterrows():
+
+        timing_name = str(
+            row["Crop"]
+        )
+
+        weeks = int(
+            round(
+                float(row["Estimated Weeks to Sale"])
+            )
+        )
+
+        timing_norm = clean_timing_name(
+            timing_name
+        )
+
+        rows.append(
+            (
+                timing_name,
+                weeks,
+                timing_norm
+            )
+        )
+
+        if timing_norm and timing_norm not in exact:
+            exact[timing_norm] = (
+                weeks,
+                timing_name
+            )
+
+    return {
+        "rows": rows,
+        "exact": exact
+    }
+
+
 def clean_timing_name(value):
 
     text = normalise_singular_lookup_text(
@@ -2319,7 +2813,7 @@ def lookup_grow_weeks(crop_name, variety, timing):
     return None
 
 
-def lookup_grow_timing(crop_name, variety, timing):
+def lookup_grow_timing(crop_name, variety, timing, timing_lookup=None):
 
     if len(timing) == 0:
         return None
@@ -2332,15 +2826,13 @@ def lookup_grow_timing(crop_name, variety, timing):
         crop_text
     ]
 
-    timing_rows = []
-
-    for _, row in timing.iterrows():
-        timing_rows.append(
-            (
-                str(row["Crop"]),
-                row["Estimated Weeks to Sale"]
-            )
+    if timing_lookup is None:
+        timing_lookup = build_timing_lookup(
+            timing
         )
+
+    timing_rows = timing_lookup["rows"]
+    exact_lookup = timing_lookup["exact"]
 
     for search_value in search_values:
 
@@ -2348,17 +2840,8 @@ def lookup_grow_timing(crop_name, variety, timing):
             search_value
         )
 
-        for timing_name, weeks in timing_rows:
-
-            timing_norm = clean_timing_name(
-                timing_name
-            )
-
-            if search_norm == timing_norm:
-                return (
-                    int(round(float(weeks))),
-                    timing_name
-                )
+        if search_norm in exact_lookup:
+            return exact_lookup[search_norm]
 
     for search_value in search_values:
 
@@ -2366,11 +2849,7 @@ def lookup_grow_timing(crop_name, variety, timing):
             search_value
         )
 
-        for timing_name, weeks in timing_rows:
-
-            timing_norm = clean_timing_name(
-                timing_name
-            )
+        for timing_name, weeks, timing_norm in timing_rows:
 
             if (
                 timing_norm
@@ -2384,7 +2863,7 @@ def lookup_grow_timing(crop_name, variety, timing):
                 )
             ):
                 return (
-                    int(round(float(weeks))),
+                    int(weeks),
                     timing_name
                 )
 
@@ -2396,15 +2875,11 @@ def lookup_grow_timing(crop_name, variety, timing):
 
         first_word = first_word[0]
 
-        for timing_name, weeks in timing_rows:
-
-            timing_norm = clean_timing_name(
-                timing_name
-            )
+        for timing_name, weeks, timing_norm in timing_rows:
 
             if timing_norm == first_word:
                 return (
-                    int(round(float(weeks))),
+                    int(weeks),
                     timing_name
                 )
 
@@ -2466,6 +2941,74 @@ def output_divisor_for_order(line, cavity):
     return None
 
 
+def add_output_divisor_column(orders):
+
+    orders = orders.copy()
+
+    line = (
+        orders["Line"]
+        .astype(str)
+        .str.upper()
+    )
+
+    cavity = pd.to_numeric(
+        orders["Cavity"],
+        errors="coerce"
+    ).fillna(0)
+
+    output_divisor = pd.Series(
+        pd.NA,
+        index=orders.index,
+        dtype="Float64"
+    )
+
+    seedling = (
+        line.str.contains(
+            "SEEDLINGS",
+            na=False
+        )
+        & ~line.str.contains(
+            "PETUNIA HYBRIDS",
+            na=False
+        )
+    )
+
+    output_divisor.loc[seedling] = 6
+    output_divisor.loc[seedling & cavity.eq(4)] = 4
+
+    output_divisor.loc[
+        line.str.contains(
+            "12CM",
+            na=False
+        )
+    ] = 1
+
+    output_divisor.loc[
+        line.str.contains(
+            "15CM",
+            na=False
+        )
+    ] = 2
+
+    output_divisor.loc[
+        line.str.contains(
+            "PLANT TO PLATE",
+            na=False
+        )
+    ] = pd.NA
+
+    output_divisor.loc[
+        line.str.contains(
+            "PETUNIA HYBRIDS",
+            na=False
+        )
+    ] = pd.NA
+
+    orders["Output Divisor"] = output_divisor
+
+    return orders
+
+
 def product_display_name(crop_name, variety):
 
     crop = str(crop_name).strip().upper()
@@ -2493,6 +3036,9 @@ def forecast_weekly_sowing_rows(
 ):
 
     timing = load_grow_weeks_table()
+    timing_lookup = build_timing_lookup(
+        timing
+    )
 
     if len(timing) == 0:
         return (
@@ -2519,12 +3065,8 @@ def forecast_weekly_sowing_rows(
             ]
         )
 
-    orders["Output Divisor"] = orders.apply(
-        lambda row: output_divisor_for_order(
-            row["Line"],
-            row["Cavity"]
-        ),
-        axis=1
+    orders = add_output_divisor_column(
+        orders
     )
 
     orders = orders[
@@ -2533,13 +3075,46 @@ def forecast_weekly_sowing_rows(
 
     warnings = []
 
-    timing_matches = orders.apply(
-        lambda row: lookup_grow_timing(
-            row["Crop Name"],
-            row["Variety"],
-            timing
-        ),
-        axis=1
+    timing_keys = (
+        orders[
+            [
+                "Crop Name",
+                "Variety"
+            ]
+        ]
+        .drop_duplicates()
+    )
+
+    timing_match_map = {}
+
+    for _, key_row in timing_keys.iterrows():
+
+        key = (
+            str(key_row["Crop Name"]),
+            str(key_row["Variety"])
+        )
+
+        timing_match_map[key] = lookup_grow_timing(
+            key[0],
+            key[1],
+            timing,
+            timing_lookup
+        )
+
+    timing_matches = pd.Series(
+        [
+            timing_match_map.get(
+                (
+                    str(crop_name),
+                    str(variety)
+                )
+            )
+            for crop_name, variety in zip(
+                orders["Crop Name"],
+                orders["Variety"]
+            )
+        ],
+        index=orders.index
     )
 
     orders["Grow Weeks"] = timing_matches.map(
@@ -2956,7 +3531,7 @@ def render_sowing_planner_export():
     )
 
     st.caption(
-        "Uses orders only. The order date is treated as the ready-to-sell period, then demand is averaged across the month to create this week's sowing quantities."
+        "Uses orders, grow weeks, and optional seed stock. The order date is treated as the ready-to-sell period, then demand is averaged across the month to create this week's sowing quantities."
     )
 
     template_available = template_path().is_file()
@@ -2970,6 +3545,21 @@ def render_sowing_planner_export():
     if not timing_available:
         st.warning(
             f"Missing {GROW_WEEKS_FILE}. Add the crop grow-week lookup to the app folder, Documents, or Downloads."
+        )
+
+    stock_source = st.file_uploader(
+        "Seed stock list",
+        type=[
+            "xlsx",
+            "xls",
+            "csv"
+        ],
+        help="Optional. Include crop/product, variety if available, and quantity/on-hand columns."
+    )
+
+    if stock_source is None and seed_stock_path().is_file():
+        st.caption(
+            f"Using local seed stock file: {seed_stock_path().name}"
         )
 
     today = pd.Timestamp.today()
@@ -3051,7 +3641,22 @@ def render_sowing_planner_export():
             int(max_rows)
         )
 
-        for warning in warnings:
+        stock, stock_warnings = load_seed_stock_table(
+            stock_source
+        )
+
+        plan, seed_stock_warnings = apply_seed_stock_to_plan(
+            plan,
+            stock,
+            float(germ_pct),
+            float(growth_pct)
+        )
+
+        for warning in (
+            warnings
+            + stock_warnings
+            + seed_stock_warnings
+        ):
             st.warning(
                 warning
             )
@@ -3063,6 +3668,31 @@ def render_sowing_planner_export():
             "Planner Preview"
         )
 
+        if len(stock) > 0:
+
+            status_counts = (
+                plan["Seed Stock Status"]
+                .value_counts()
+                .to_dict()
+            )
+
+            stock_col1, stock_col2, stock_col3 = st.columns(3)
+
+            stock_col1.metric(
+                "Seed rows in stock",
+                f"{status_counts.get('In stock', 0):,.0f}"
+            )
+
+            stock_col2.metric(
+                "Close variety rows",
+                f"{status_counts.get('Use close variety', 0):,.0f}"
+            )
+
+            stock_col3.metric(
+                "Missing / low rows",
+                f"{status_counts.get('Missing', 0) + status_counts.get('Low stock', 0):,.0f}"
+            )
+
         preview_cols = [
             "Sow Priority",
             "Line",
@@ -3071,6 +3701,10 @@ def render_sowing_planner_export():
             "Week Ready For",
             "Base Forecast Output Units",
             "Output Divisor",
+            "Estimated Seeds Needed",
+            "Seed Stock Status",
+            "Seed Stock Match",
+            "Seed Stock On Hand",
             "History Month",
             "Monthly Demand"
         ]
