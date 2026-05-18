@@ -2584,11 +2584,29 @@ def summarise_stock_options(options):
     if len(options) == 0:
         return ""
 
+    sort_cols = [
+        "Quantity On Hand"
+    ]
+
+    sort_ascending = [
+        False
+    ]
+
+    if "Match Score" in options.columns:
+        sort_cols = [
+            "Match Score",
+            "Quantity On Hand"
+        ]
+        sort_ascending = [
+            False,
+            False
+        ]
+
     return ", ".join(
         options
         .sort_values(
-            "Quantity On Hand",
-            ascending=False
+            sort_cols,
+            ascending=sort_ascending
         )
         .head(4)
         .apply(
@@ -2596,6 +2614,30 @@ def summarise_stock_options(options):
             axis=1
         )
         .tolist()
+    )
+
+
+def seed_stock_match_score(requested_text, stock_text):
+
+    requested_words = set(
+        clean_timing_name(
+            requested_text
+        ).split()
+    )
+
+    stock_words = set(
+        clean_timing_name(
+            stock_text
+        ).split()
+    )
+
+    if not requested_words or not stock_words:
+        return 0
+
+    return len(
+        requested_words.intersection(
+            stock_words
+        )
     )
 
 
@@ -2652,6 +2694,9 @@ def apply_seed_stock_to_plan(plan, stock, germ_pct, growth_pct):
             available["Match Text"].eq(requested_text)
         ].copy()
 
+        if len(exact) > 0:
+            exact["Match Score"] = 999
+
         match_type = "Exact"
         options = exact
 
@@ -2660,6 +2705,13 @@ def apply_seed_stock_to_plan(plan, stock, germ_pct, growth_pct):
             options = available[
                 available["Family"].eq(requested_family)
             ].copy()
+
+            options["Match Score"] = options["Match Text"].map(
+                lambda stock_text: seed_stock_match_score(
+                    requested_text,
+                    stock_text
+                )
+            )
 
             match_type = "Close variety"
 
@@ -2704,8 +2756,14 @@ def apply_seed_stock_to_plan(plan, stock, germ_pct, growth_pct):
             remaining = needed
 
             for stock_index in options.sort_values(
-                "Quantity On Hand",
-                ascending=False
+                [
+                    "Match Score",
+                    "Quantity On Hand"
+                ],
+                ascending=[
+                    False,
+                    False
+                ]
             ).index:
 
                 take = min(
@@ -3039,13 +3097,11 @@ def forecast_weekly_sowing_rows(
     timing_lookup = build_timing_lookup(
         timing
     )
+    warnings = []
 
     if len(timing) == 0:
-        return (
-            pd.DataFrame(),
-            [
-                f"Missing {GROW_WEEKS_FILE}. Add it to the app folder before exporting a sowing plan."
-            ]
+        warnings.append(
+            f"Missing or empty {GROW_WEEKS_FILE}; using 6 weeks for all planner rows."
         )
 
     orders = ensure_standard_columns(
@@ -3073,7 +3129,13 @@ def forecast_weekly_sowing_rows(
         orders["Output Divisor"].notna()
     ].copy()
 
-    warnings = []
+    orders["Planner Crop"] = orders.apply(
+        lambda row: product_display_name(
+            row["Crop Name"],
+            row["Variety"]
+        ),
+        axis=1
+    )
 
     timing_keys = (
         orders[
@@ -3117,19 +3179,11 @@ def forecast_weekly_sowing_rows(
         index=orders.index
     )
 
-    orders["Grow Weeks"] = timing_matches.map(
-        lambda value: value[0] if value else None
-    )
-
-    orders["Planner Crop"] = timing_matches.map(
-        lambda value: value[1] if value else None
-    )
-
     missing_timing = orders[
-        orders["Grow Weeks"].isna()
+        timing_matches.isna()
     ]
 
-    if len(missing_timing) > 0:
+    if len(missing_timing) > 0 and len(timing) > 0:
 
         for crop_name in (
             missing_timing["Crop Name"]
@@ -3140,12 +3194,20 @@ def forecast_weekly_sowing_rows(
             .head(20)
         ):
             warnings.append(
-                f"No grow weeks found for {crop_name}."
+                f"No grow weeks found for {crop_name}; using 6 weeks."
             )
 
+    orders["Grow Weeks"] = timing_matches.map(
+        lambda value: value[0] if value else 6
+    )
+
+    orders["Timing Crop"] = timing_matches.map(
+        lambda value: value[1] if value else "Default 6 weeks"
+    )
+
     orders = orders[
-        orders["Grow Weeks"].notna()
-        & orders["Planner Crop"].notna()
+        orders["Planner Crop"].notna()
+        & orders["Planner Crop"].astype(str).str.strip().ne("")
     ].copy()
 
     if len(orders) == 0:
@@ -3153,7 +3215,7 @@ def forecast_weekly_sowing_rows(
             pd.DataFrame(),
             warnings
             + [
-                "No orders matched the grow-weeks lookup."
+                "No orders were available after preparing planner crop names."
             ]
         )
 
@@ -3168,6 +3230,7 @@ def forecast_weekly_sowing_rows(
                 "Month",
                 "Line",
                 "Planner Crop",
+                "Timing Crop",
                 "Grow Weeks",
                 "Output Divisor"
             ],
@@ -3185,6 +3248,7 @@ def forecast_weekly_sowing_rows(
                 "Month",
                 "Line",
                 "Planner Crop",
+                "Timing Crop",
                 "Grow Weeks",
                 "Output Divisor"
             ],
@@ -3210,6 +3274,7 @@ def forecast_weekly_sowing_rows(
             "Month",
             "Line",
             "Planner Crop",
+            "Timing Crop",
             "Grow Weeks",
             "Output Divisor"
         ],
@@ -3223,6 +3288,7 @@ def forecast_weekly_sowing_rows(
             [
                 "Line",
                 "Planner Crop",
+                "Timing Crop",
                 "Grow Weeks",
                 "Output Divisor"
             ]
@@ -3250,6 +3316,7 @@ def forecast_weekly_sowing_rows(
             & (monthly["Month"] == target_month)
             & (monthly["Line"].astype(str) == str(product["Line"]))
             & (monthly["Planner Crop"].astype(str) == str(product["Planner Crop"]))
+            & (monthly["Timing Crop"].astype(str) == str(product["Timing Crop"]))
             & (monthly["Grow Weeks"].astype(float) == float(product["Grow Weeks"]))
             & (
                 monthly["Output Divisor"].astype(float)
@@ -3296,11 +3363,19 @@ def forecast_weekly_sowing_rows(
             weekly_qty = practical_batch
 
         included_crops = ""
+        timing_source = ""
 
         if len(demand) > 0:
             included_crops = str(
                 demand["Included Crops"].iloc[0]
             )
+
+        timing_source = str(
+            product.get(
+                "Timing Crop",
+                ""
+            )
+        )
 
         rows.append({
             "Line": product["Line"],
@@ -3322,6 +3397,7 @@ def forecast_weekly_sowing_rows(
                 f"Orders only. {pd.Timestamp(year=history_year, month=target_month, day=1).strftime('%B %Y')} "
                 f"demand {monthly_qty:,.0f} split across 4 weeks. "
                 f"Minimum practical batch {practical_batch:,.0f} output units. "
+                f"Grow timing: {timing_source}. "
                 f"Includes: {included_crops}"
             )
         })
