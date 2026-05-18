@@ -3541,24 +3541,7 @@ def ensure_planner_rows(wb, required_rows):
     ws_weekly["R9"] = f"=SUM(N4:N{last_weekly_row})"
 
 
-def sow_list_cavity(row, planning_tray_cells):
-
-    line_text = str(
-        row.get(
-            "Line",
-            ""
-        )
-    ).upper()
-
-    if "12CM" in line_text or "15CM" in line_text:
-        return 512
-
-    return int(
-        planning_tray_cells
-    )
-
-
-def sow_list_quantity(row, cavity):
+def sow_list_seed_quantity(row):
 
     seeds_needed = int(
         row.get(
@@ -3580,19 +3563,16 @@ def sow_list_quantity(row, cavity):
             ) or 1
         )
 
-    cavity = max(
-        int(cavity or 1),
-        1
-    )
-
     return max(
         1,
-        int(
-            -(
-                -seeds_needed
-                // cavity
-            )
-        )
+        seeds_needed
+    )
+
+
+def sow_list_quantity_formula(excel_row, seeds_needed):
+
+    return (
+        f'=IF(G{excel_row}="","",ROUNDUP({int(seeds_needed)}/G{excel_row},0))'
     )
 
 
@@ -3729,7 +3709,7 @@ def add_weekly_sow_list_sheet(
         "Production Line",
         "Cavity ",
         "Total Crops Sowed",
-        "Shanes Quantity",
+        "Quantity Needed",
         "Comments",
         "Batch #",
         "Date out Germ Room",
@@ -3756,15 +3736,14 @@ def add_weekly_sow_list_sheet(
 
     for _, row in sow_list.iterrows():
 
-        cavity = sow_list_cavity(
-            row,
-            planning_tray_cells
+        input_row = 9 + int(
+            row.name
         )
 
-        shanes_quantity = sow_list_quantity(
-            row,
-            cavity
+        seeds_needed = sow_list_seed_quantity(
+            row
         )
+        excel_row = ws.max_row + 1
 
         comments = (
             f"Ready wk {int(row.get('Week Ready For', 0) or 0)}. "
@@ -3779,9 +3758,12 @@ def add_weekly_sow_list_sheet(
             int(row["Sow Priority"]),
             str(row["Crop Name"]).upper(),
             row.get("Line", ""),
-            cavity,
+            f"='Inputs'!G{input_row}",
             None,
-            shanes_quantity,
+            sow_list_quantity_formula(
+                excel_row,
+                seeds_needed
+            ),
             comments,
             None,
             None,
