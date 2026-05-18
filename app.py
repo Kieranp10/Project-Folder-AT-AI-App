@@ -7,7 +7,7 @@ from pathlib import Path
 from io import BytesIO
 from copy import copy
 from datetime import date
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.formula.translate import Translator
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.page import PageMargins
@@ -3903,6 +3903,142 @@ def add_weekly_sow_list_sheet(
     )
 
 
+def add_upcoming_stock_risks_sheet(
+    wb,
+    stock_risks,
+    horizon_weeks
+):
+
+    sheet_name = "Upcoming Stock Risks"
+
+    if sheet_name in wb.sheetnames:
+        del wb[sheet_name]
+
+    ws = wb.create_sheet(
+        sheet_name
+    )
+
+    headers = [
+        "Sow Week",
+        "Priority",
+        "Production Line",
+        "Crop",
+        "Seeds Needed",
+        "Stock Status",
+        "Stock On Hand",
+        "Stock Match",
+        "Week Ready For",
+        "History Month",
+        "Monthly Demand"
+    ]
+
+    ws.append(
+        headers
+    )
+
+    if stock_risks is None or len(stock_risks) == 0:
+        ws.append([
+            f"No missing or low seed stock found for the next {int(horizon_weeks)} weeks.",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            ""
+        ])
+    else:
+        for _, row in stock_risks.iterrows():
+            ws.append([
+                row.get("Sow Week", ""),
+                int(row.get("Sow Priority", 0) or 0),
+                row.get("Line", ""),
+                row.get("Crop Name", ""),
+                int(row.get("Estimated Seeds Needed", 0) or 0),
+                row.get("Seed Stock Status", ""),
+                int(row.get("Seed Stock On Hand", 0) or 0),
+                row.get("Seed Stock Match", ""),
+                int(row.get("Week Ready For", 0) or 0),
+                row.get("History Month", ""),
+                float(row.get("Monthly Demand", 0) or 0)
+            ])
+
+    header_fill = PatternFill(
+        "solid",
+        fgColor="A6A6A6"
+    )
+    risk_fill = PatternFill(
+        "solid",
+        fgColor="F4CCCC"
+    )
+    thin = Side(
+        style="thin",
+        color="000000"
+    )
+    border = Border(
+        left=thin,
+        right=thin,
+        top=thin,
+        bottom=thin
+    )
+
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.alignment = Alignment(
+            horizontal="center",
+            vertical="center",
+            wrap_text=True
+        )
+        cell.border = border
+
+    for row in ws.iter_rows(
+        min_row=2,
+        max_row=ws.max_row
+    ):
+        for cell in row:
+            cell.border = border
+            cell.alignment = Alignment(
+                vertical="center",
+                wrap_text=True
+            )
+
+        status = str(
+            row[5].value
+        ).lower()
+
+        if "missing" in status or "low" in status:
+            for cell in row:
+                cell.fill = risk_fill
+
+    widths = {
+        "A": 12,
+        "B": 10,
+        "C": 20,
+        "D": 34,
+        "E": 14,
+        "F": 14,
+        "G": 14,
+        "H": 42,
+        "I": 14,
+        "J": 18,
+        "K": 14
+    }
+
+    for col, width in widths.items():
+        ws.column_dimensions[col].width = width
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+
+
 def build_sowing_planner_workbook(
     plan,
     current_week,
@@ -3976,6 +4112,29 @@ def build_sowing_planner_workbook(
         ws[f"H{excel_row}"] = int(row["Base Forecast Output Units"])
         ws[f"K{excel_row}"] = int(row["Output Divisor"])
         ws[f"U{excel_row}"] = row["Notes"]
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    return output
+
+
+def build_stock_risk_workbook(
+    stock_risks,
+    horizon_weeks
+):
+
+    wb = Workbook()
+
+    add_upcoming_stock_risks_sheet(
+        wb,
+        stock_risks,
+        horizon_weeks
+    )
+
+    if "Sheet" in wb.sheetnames:
+        del wb["Sheet"]
 
     output = BytesIO()
     wb.save(output)
@@ -4228,6 +4387,23 @@ def render_sowing_planner_export():
             "Download filled sowing planner",
             data=workbook,
             file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        stock_risk_workbook = build_stock_risk_workbook(
+            stock_risks,
+            int(stock_warning_weeks)
+        )
+
+        risk_filename = (
+            f"AT_Nursery_Upcoming_Seed_Stock_Risks_Week_{int(current_week)}_"
+            f"{int(plan_year)}.xlsx"
+        )
+
+        st.download_button(
+            "Download upcoming seed stock risks",
+            data=stock_risk_workbook,
+            file_name=risk_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
