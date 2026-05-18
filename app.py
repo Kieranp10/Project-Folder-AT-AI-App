@@ -10,6 +10,7 @@ from datetime import date
 from openpyxl import load_workbook
 from openpyxl.formula.translate import Translator
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.page import PageMargins
 import json
 import os
 import re
@@ -3650,16 +3651,13 @@ def style_weekly_sow_list_sheet(ws):
         for col_index in [
             1,
             2,
-            5,
-            6,
+            4,
             7,
+            8,
+            9,
+            11,
             12,
-            14,
-            15,
-            16,
-            17,
-            19,
-            20
+            14
         ]:
             row[col_index - 1].alignment = Alignment(
                 horizontal="center",
@@ -3668,27 +3666,20 @@ def style_weekly_sow_list_sheet(ws):
             )
 
     widths = {
-        "A": 10,
-        "B": 13,
-        "C": 13,
-        "D": 34,
-        "E": 10,
-        "F": 15,
-        "G": 15,
-        "H": 28,
+        "A": 8,
+        "B": 10,
+        "C": 12,
+        "D": 8,
+        "E": 34,
+        "F": 16,
+        "G": 8,
+        "H": 12,
         "I": 12,
-        "J": 16,
-        "K": 18,
-        "L": 13,
-        "M": 20,
-        "N": 12,
-        "O": 13,
-        "P": 16,
-        "Q": 16,
-        "R": 18,
-        "S": 18,
-        "T": 18,
-        "U": 42
+        "J": 26,
+        "K": 10,
+        "L": 14,
+        "M": 16,
+        "N": 14
     }
 
     for col, width in widths.items():
@@ -3696,6 +3687,20 @@ def style_weekly_sow_list_sheet(ws):
 
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_setup.orientation = "landscape"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_margins = PageMargins(
+        left=0.25,
+        right=0.25,
+        top=0.5,
+        bottom=0.5,
+        header=0.2,
+        footer=0.2
+    )
+    ws.print_title_rows = "1:1"
 
 
 def add_weekly_sow_list_sheet(
@@ -3712,15 +3717,16 @@ def add_weekly_sow_list_sheet(
         del wb[sheet_name]
 
     ws = wb.create_sheet(
-        sheet_name,
-        0
+        sheet_name
     )
 
     headers = [
         "Year",
         "Sowing List #",
         "Date Sowed",
+        "Priority",
         "Full Name Of Crop & Colour",
+        "Production Line",
         "Cavity ",
         "Total Crops Sowed",
         "Shanes Quantity",
@@ -3728,16 +3734,7 @@ def add_weekly_sow_list_sheet(
         "Batch #",
         "Date out Germ Room",
         "Person out of Germ Room",
-        "Sow Priority",
-        "Production Line",
-        "Grow Weeks",
-        "Week Ready For",
-        "Monthly Demand",
-        "Demand Priority Score",
-        "Seeds Needed",
-        "Seed Stock Status",
-        "Seed Stock On Hand",
-        "Seed Stock Match"
+        "Seed Stock"
     ]
 
     ws.append(
@@ -3770,16 +3767,18 @@ def add_weekly_sow_list_sheet(
         )
 
         comments = (
-            f"{row.get('Seed Stock Status', '')}. "
-            f"{row.get('History Month', '')} demand "
-            f"{float(row.get('Monthly Demand', 0) or 0):,.0f}."
+            f"Ready wk {int(row.get('Week Ready For', 0) or 0)}. "
+            f"Grow {int(row.get('Grow Weeks', 0) or 0)} wks. "
+            f"Demand {float(row.get('Monthly Demand', 0) or 0):,.0f}."
         ).strip()
 
         ws.append([
             int(plan_year),
             int(current_week),
             None,
+            int(row["Sow Priority"]),
             str(row["Crop Name"]).upper(),
+            row.get("Line", ""),
             cavity,
             None,
             shanes_quantity,
@@ -3787,16 +3786,7 @@ def add_weekly_sow_list_sheet(
             None,
             None,
             None,
-            int(row["Sow Priority"]),
-            row.get("Line", ""),
-            int(row.get("Grow Weeks", 0) or 0),
-            int(row.get("Week Ready For", 0) or 0),
-            float(row.get("Monthly Demand", 0) or 0),
-            float(row.get("Demand Priority Score", 0) or 0),
-            int(row.get("Estimated Seeds Needed", 0) or 0),
-            row.get("Seed Stock Status", ""),
-            int(row.get("Seed Stock On Hand", 0) or 0),
-            row.get("Seed Stock Match", "")
+            row.get("Seed Stock Status", "")
         ])
 
     style_weekly_sow_list_sheet(
