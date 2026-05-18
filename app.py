@@ -3908,21 +3908,24 @@ def render_sowing_planner_export():
         step=1
     )
 
-    germ_pct = col3.number_input(
+    germ_pct_input = col3.number_input(
         "Default germination %",
-        min_value=0.1,
-        max_value=1.0,
-        value=0.9,
-        step=0.01
+        min_value=10.0,
+        max_value=100.0,
+        value=90.0,
+        step=1.0
     )
 
-    growth_pct = st.number_input(
+    growth_pct_input = st.number_input(
         "Sales growth %",
-        min_value=-1.0,
-        max_value=5.0,
-        value=0.05,
-        step=0.01
+        min_value=-100.0,
+        max_value=500.0,
+        value=5.0,
+        step=1.0
     )
+
+    germ_pct = float(germ_pct_input) / 100
+    growth_pct = float(growth_pct_input) / 100
 
     col4, col5, col6 = st.columns(3)
 
