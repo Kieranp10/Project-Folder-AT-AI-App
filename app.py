@@ -2793,6 +2793,133 @@ def apply_seed_stock_to_plan(plan, stock, germ_pct, growth_pct):
     )
 
 
+def build_upcoming_seed_stock_risks(
+    current_week,
+    plan_year,
+    planning_tray_cells,
+    germ_pct,
+    min_tray_fraction,
+    growth_pct,
+    stock,
+    horizon_weeks,
+    max_rows
+):
+
+    if len(stock) == 0 or int(horizon_weeks) <= 0:
+        return (
+            pd.DataFrame(),
+            []
+        )
+
+    upcoming = []
+    warnings = []
+
+    for offset in range(
+        int(horizon_weeks)
+    ):
+
+        sow_week_number = int(current_week) + offset
+        sow_week_start = iso_week_start(
+            int(plan_year),
+            sow_week_number
+        )
+
+        week_plan, week_warnings = forecast_weekly_sowing_rows(
+            sow_week_number,
+            int(plan_year),
+            int(planning_tray_cells),
+            float(germ_pct),
+            float(min_tray_fraction),
+            int(max_rows)
+        )
+
+        warnings.extend(
+            week_warnings
+        )
+
+        if len(week_plan) == 0:
+            continue
+
+        week_plan = week_plan.copy()
+        week_plan["Sow Week"] = (
+            f"{sow_week_start.isocalendar().year}-W"
+            f"{int(sow_week_start.isocalendar().week):02d}"
+        )
+        week_plan["Sow Week Start"] = pd.Timestamp(
+            sow_week_start
+        )
+
+        upcoming.append(
+            week_plan
+        )
+
+    if not upcoming:
+        return (
+            pd.DataFrame(),
+            warnings[:20]
+        )
+
+    risk_plan = pd.concat(
+        upcoming,
+        ignore_index=True
+    )
+
+    risk_plan = risk_plan.sort_values(
+        [
+            "Sow Week Start",
+            "Sow Priority",
+            "Demand Priority Score",
+            "Crop Name"
+        ],
+        ascending=[
+            True,
+            True,
+            False,
+            True
+        ]
+    ).reset_index(drop=True)
+
+    risk_plan, stock_warnings = apply_seed_stock_to_plan(
+        risk_plan,
+        stock,
+        germ_pct,
+        growth_pct
+    )
+
+    risky = risk_plan[
+        risk_plan["Seed Stock Status"].isin(
+            [
+                "Missing",
+                "Low stock"
+            ]
+        )
+    ].copy()
+
+    risky = risky[
+        [
+            "Sow Week",
+            "Sow Priority",
+            "Line",
+            "Crop Name",
+            "Estimated Seeds Needed",
+            "Seed Stock Status",
+            "Seed Stock On Hand",
+            "Seed Stock Match",
+            "Week Ready For",
+            "History Month",
+            "Monthly Demand"
+        ]
+    ]
+
+    return (
+        risky,
+        (
+            warnings
+            + stock_warnings
+        )[:20]
+    )
+
+
 def build_timing_lookup(timing):
 
     rows = []
@@ -3954,6 +4081,14 @@ def render_sowing_planner_export():
         step=10
     )
 
+    stock_warning_weeks = st.number_input(
+        "Warn for seed stock needed in next weeks",
+        min_value=1,
+        max_value=12,
+        value=6,
+        step=1
+    )
+
     if st.button(
         "Build sowing planner"
     ):
@@ -3969,6 +4104,21 @@ def render_sowing_planner_export():
 
         stock, stock_warnings = load_seed_stock_table()
 
+        stock_risks, risk_warnings = build_upcoming_seed_stock_risks(
+            int(current_week),
+            int(plan_year),
+            int(planning_tray_cells),
+            float(germ_pct),
+            float(min_tray_fraction),
+            float(growth_pct),
+            stock,
+            int(stock_warning_weeks),
+            max(
+                int(max_rows),
+                100
+            )
+        )
+
         plan, seed_stock_warnings = apply_seed_stock_to_plan(
             plan,
             stock,
@@ -3979,6 +4129,7 @@ def render_sowing_planner_export():
         for warning in (
             warnings
             + stock_warnings
+            + risk_warnings
             + seed_stock_warnings
         ):
             st.warning(
@@ -3991,6 +4142,20 @@ def render_sowing_planner_export():
         st.subheader(
             "Planner Preview"
         )
+
+        if len(stock_risks) > 0:
+            st.error(
+                f"Seed stock risk found for upcoming sow lists in the next {int(stock_warning_weeks)} weeks."
+            )
+            st.dataframe(
+                stock_risks,
+                use_container_width=True
+            )
+
+        elif len(stock) > 0:
+            st.success(
+                f"No missing or low seed stock found for the next {int(stock_warning_weeks)} weeks."
+            )
 
         if len(stock) > 0:
 
