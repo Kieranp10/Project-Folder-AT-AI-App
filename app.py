@@ -3547,17 +3547,7 @@ def render_sowing_planner_export():
             f"Missing {GROW_WEEKS_FILE}. Add the crop grow-week lookup to the app folder, Documents, or Downloads."
         )
 
-    stock_source = st.file_uploader(
-        "Seed stock list",
-        type=[
-            "xlsx",
-            "xls",
-            "csv"
-        ],
-        help="Optional. Include crop/product, variety if available, and quantity/on-hand columns."
-    )
-
-    if stock_source is None and seed_stock_path().is_file():
+    if seed_stock_path().is_file():
         st.caption(
             f"Using local seed stock file: {seed_stock_path().name}"
         )
@@ -3641,9 +3631,7 @@ def render_sowing_planner_export():
             int(max_rows)
         )
 
-        stock, stock_warnings = load_seed_stock_table(
-            stock_source
-        )
+        stock, stock_warnings = load_seed_stock_table()
 
         plan, seed_stock_warnings = apply_seed_stock_to_plan(
             plan,
