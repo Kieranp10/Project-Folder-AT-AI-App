@@ -2307,6 +2307,20 @@ def clean_timing_name(value):
 
 def lookup_grow_weeks(crop_name, variety, timing):
 
+    result = lookup_grow_timing(
+        crop_name,
+        variety,
+        timing
+    )
+
+    if result:
+        return result[0]
+
+    return None
+
+
+def lookup_grow_timing(crop_name, variety, timing):
+
     if len(timing) == 0:
         return None
 
@@ -2341,7 +2355,10 @@ def lookup_grow_weeks(crop_name, variety, timing):
             )
 
             if search_norm == timing_norm:
-                return int(round(float(weeks)))
+                return (
+                    int(round(float(weeks))),
+                    timing_name
+                )
 
     for search_value in search_values:
 
@@ -2366,7 +2383,10 @@ def lookup_grow_weeks(crop_name, variety, timing):
                     )
                 )
             ):
-                return int(round(float(weeks)))
+                return (
+                    int(round(float(weeks))),
+                    timing_name
+                )
 
     first_word = clean_timing_name(
         crop_text
@@ -2383,7 +2403,10 @@ def lookup_grow_weeks(crop_name, variety, timing):
             )
 
             if timing_norm == first_word:
-                return int(round(float(weeks)))
+                return (
+                    int(round(float(weeks))),
+                    timing_name
+                )
 
     return None
 
@@ -2460,7 +2483,14 @@ def product_display_name(crop_name, variety):
     return f"{crop} {var}"
 
 
-def forecast_weekly_sowing_rows(current_week, plan_year):
+def forecast_weekly_sowing_rows(
+    current_week,
+    plan_year,
+    planning_tray_cells=595,
+    germ_pct=0.9,
+    min_tray_fraction=0.5,
+    max_rows=50
+):
 
     timing = load_grow_weeks_table()
 
@@ -2501,31 +2531,59 @@ def forecast_weekly_sowing_rows(current_week, plan_year):
         orders["Output Divisor"].notna()
     ].copy()
 
-    orders["Year"] = orders["Date"].dt.year
-    orders["Month"] = orders["Date"].dt.month
-    orders["Planner Crop"] = orders.apply(
-        lambda row: product_display_name(
+    warnings = []
+
+    timing_matches = orders.apply(
+        lambda row: lookup_grow_timing(
             row["Crop Name"],
-            row["Variety"]
+            row["Variety"],
+            timing
         ),
         axis=1
     )
 
-    grouped = (
-        orders
-        .groupby(
-            [
-                "Line",
-                "Crop Name",
-                "Variety",
-                "Cavity",
-                "Output Divisor"
-            ],
-            dropna=False
-        )
-        .size()
-        .reset_index(name="Rows")
+    orders["Grow Weeks"] = timing_matches.map(
+        lambda value: value[0] if value else None
     )
+
+    orders["Planner Crop"] = timing_matches.map(
+        lambda value: value[1] if value else None
+    )
+
+    missing_timing = orders[
+        orders["Grow Weeks"].isna()
+    ]
+
+    if len(missing_timing) > 0:
+
+        for crop_name in (
+            missing_timing["Crop Name"]
+            .dropna()
+            .astype(str)
+            .str.upper()
+            .drop_duplicates()
+            .head(20)
+        ):
+            warnings.append(
+                f"No grow weeks found for {crop_name}."
+            )
+
+    orders = orders[
+        orders["Grow Weeks"].notna()
+        & orders["Planner Crop"].notna()
+    ].copy()
+
+    if len(orders) == 0:
+        return (
+            pd.DataFrame(),
+            warnings
+            + [
+                "No orders matched the grow-weeks lookup."
+            ]
+        )
+
+    orders["Year"] = orders["Date"].dt.year
+    orders["Month"] = orders["Date"].dt.month
 
     monthly = (
         orders
@@ -2534,9 +2592,8 @@ def forecast_weekly_sowing_rows(current_week, plan_year):
                 "Year",
                 "Month",
                 "Line",
-                "Crop Name",
-                "Variety",
-                "Cavity",
+                "Planner Crop",
+                "Grow Weeks",
                 "Output Divisor"
             ],
             dropna=False
@@ -2545,26 +2602,68 @@ def forecast_weekly_sowing_rows(current_week, plan_year):
         .reset_index()
     )
 
-    rows = []
-    warnings = []
-
-    for _, product in grouped.iterrows():
-
-        grow_weeks = lookup_grow_weeks(
-            product["Crop Name"],
-            product["Variety"],
-            timing
-        )
-
-        if grow_weeks is None:
-            warnings.append(
-                f"No grow weeks found for {product_display_name(product['Crop Name'], product['Variety'])}."
+    varieties = (
+        orders
+        .groupby(
+            [
+                "Year",
+                "Month",
+                "Line",
+                "Planner Crop",
+                "Grow Weeks",
+                "Output Divisor"
+            ],
+            dropna=False
+        )["Crop Name"]
+        .apply(
+            lambda values: ", ".join(
+                values
+                .dropna()
+                .astype(str)
+                .str.upper()
+                .drop_duplicates()
+                .head(5)
             )
-            continue
+        )
+        .reset_index(name="Included Crops")
+    )
+
+    monthly = monthly.merge(
+        varieties,
+        on=[
+            "Year",
+            "Month",
+            "Line",
+            "Planner Crop",
+            "Grow Weeks",
+            "Output Divisor"
+        ],
+        how="left"
+    )
+
+    rows = []
+
+    product_groups = (
+        orders[
+            [
+                "Line",
+                "Planner Crop",
+                "Grow Weeks",
+                "Output Divisor"
+            ]
+        ]
+        .drop_duplicates()
+    )
+
+    for _, product in product_groups.iterrows():
+
+        grow_weeks = int(
+            product["Grow Weeks"]
+        )
 
         ready_week_start = iso_week_start(
             plan_year,
-            int(current_week) + int(grow_weeks)
+            int(current_week) + grow_weeks
         )
 
         target_year = ready_week_start.year
@@ -2575,9 +2674,8 @@ def forecast_weekly_sowing_rows(current_week, plan_year):
             (monthly["Year"] == history_year)
             & (monthly["Month"] == target_month)
             & (monthly["Line"].astype(str) == str(product["Line"]))
-            & (monthly["Crop Name"].astype(str) == str(product["Crop Name"]))
-            & (monthly["Variety"].astype(str) == str(product["Variety"]))
-            & (monthly["Cavity"].astype(float) == float(product["Cavity"]))
+            & (monthly["Planner Crop"].astype(str) == str(product["Planner Crop"]))
+            & (monthly["Grow Weeks"].astype(float) == float(product["Grow Weeks"]))
             & (
                 monthly["Output Divisor"].astype(float)
                 == float(product["Output Divisor"])
@@ -2589,6 +2687,24 @@ def forecast_weekly_sowing_rows(current_week, plan_year):
         if monthly_qty <= 0:
             continue
 
+        output_divisor = int(
+            product["Output Divisor"]
+        )
+
+        practical_batch = int(
+            max(
+                1,
+                round(
+                    (
+                        float(planning_tray_cells)
+                        * float(germ_pct)
+                        / output_divisor
+                    )
+                    * float(min_tray_fraction)
+                )
+            )
+        )
+
         weekly_qty = int(
             max(
                 1,
@@ -2598,17 +2714,29 @@ def forecast_weekly_sowing_rows(current_week, plan_year):
             )
         )
 
+        if monthly_qty < practical_batch:
+            continue
+
+        if weekly_qty < practical_batch:
+            weekly_qty = practical_batch
+
+        included_crops = ""
+
+        if len(demand) > 0:
+            included_crops = str(
+                demand["Included Crops"].iloc[0]
+            )
+
         rows.append({
             "Line": product["Line"],
-            "Crop Name": product_display_name(
-                product["Crop Name"],
-                product["Variety"]
+            "Crop Name": str(
+                product["Planner Crop"]
             ),
-            "Grow Weeks": int(grow_weeks),
-            "Week Ready For": int(current_week) + int(grow_weeks),
+            "Grow Weeks": grow_weeks,
+            "Week Ready For": int(current_week) + grow_weeks,
             "Grow Tray": "",
             "Base Forecast Output Units": weekly_qty,
-            "Output Divisor": int(product["Output Divisor"]),
+            "Output Divisor": output_divisor,
             "History Month": pd.Timestamp(
                 year=history_year,
                 month=target_month,
@@ -2617,7 +2745,9 @@ def forecast_weekly_sowing_rows(current_week, plan_year):
             "Monthly Demand": monthly_qty,
             "Notes": (
                 f"Orders only. {pd.Timestamp(year=history_year, month=target_month, day=1).strftime('%B %Y')} "
-                f"demand {monthly_qty:,.0f} split across 4 weeks."
+                f"demand {monthly_qty:,.0f} split across 4 weeks. "
+                f"Minimum practical batch {practical_batch:,.0f} output units. "
+                f"Includes: {included_crops}"
             )
         })
 
@@ -2649,6 +2779,16 @@ def forecast_weekly_sowing_rows(current_week, plan_year):
         1,
         len(plan) + 1
     )
+
+    if max_rows and len(plan) > int(max_rows):
+
+        warnings.append(
+            f"Planner found {len(plan)} rows. Export is limited to the top {int(max_rows)} by priority."
+        )
+
+        plan = plan.head(
+            int(max_rows)
+        ).copy()
 
     return (
         plan,
@@ -2871,13 +3011,44 @@ def render_sowing_planner_export():
         step=0.01
     )
 
+    col4, col5, col6 = st.columns(3)
+
+    planning_tray_cells = col4.selectbox(
+        "Planning tray size for minimum batches",
+        [
+            595,
+            512
+        ],
+        index=0
+    )
+
+    min_tray_fraction = col5.slider(
+        "Smallest practical batch",
+        min_value=0.25,
+        max_value=1.0,
+        value=0.5,
+        step=0.25
+    )
+
+    max_rows = col6.number_input(
+        "Maximum planner rows",
+        min_value=10,
+        max_value=200,
+        value=50,
+        step=10
+    )
+
     if st.button(
         "Build sowing planner"
     ):
 
         plan, warnings = forecast_weekly_sowing_rows(
             int(current_week),
-            int(plan_year)
+            int(plan_year),
+            int(planning_tray_cells),
+            float(germ_pct),
+            float(min_tray_fraction),
+            int(max_rows)
         )
 
         for warning in warnings:
@@ -2900,7 +3071,8 @@ def render_sowing_planner_export():
             "Week Ready For",
             "Base Forecast Output Units",
             "Output Divisor",
-            "History Month"
+            "History Month",
+            "Monthly Demand"
         ]
 
         st.dataframe(
@@ -4092,24 +4264,25 @@ R{net_sales:,.2f}
         intent
     )
 
-render_sowing_planner_export()
-
 # =====================================================
 # DASHBOARD
 # =====================================================
 
 st.header("📊 Dashboard")
 
-dashboard = st.selectbox(
+with st.sidebar:
 
-    "Choose Dashboard",
+    dashboard = st.selectbox(
 
-    [
-        "Orders",
-        "Sales",
-        "Returns"
-    ]
-)
+        "Choose Dashboard",
+
+        [
+            "Orders",
+            "Sales",
+            "Returns",
+            "Sowing Planner"
+        ]
+    )
 
 # =====================================================
 # ORDERS DASHBOARD
@@ -4165,6 +4338,10 @@ if dashboard == "Orders":
             fig,
             use_container_width=True
         )
+
+elif dashboard == "Sowing Planner":
+
+    render_sowing_planner_export()
 
 # =====================================================
 # SALES DASHBOARD
